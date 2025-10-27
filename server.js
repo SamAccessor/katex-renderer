@@ -1,9 +1,8 @@
-// server.js
-// npm install express cors body-parser katex sharp
 import express from "express";
 import cors from "cors";
 import bodyParser from "body-parser";
 import katex from "katex";
+import puppeteer from "puppeteer";
 import sharp from "sharp";
 
 const app = express();
@@ -22,84 +21,80 @@ function splitBufferToTiles(rawBuffer, width, height, channels, tileHeight = 8) 
   return tiles;
 }
 
-app.get("/", (req, res) => res.send("KaTeX renderer alive"));
-
 app.post("/renderRaw", async (req, res) => {
+  const latex = String(req.body.latex || "").trim();
+  if (!latex) return res.status(400).json({ error: "Missing LaTeX" });
+
+  console.log("[RenderRaw] Rendering:", latex);
+
+  const width = Number(req.body.width) || 512;
+  const height = Number(req.body.height) || 128;
+  const tileHeight = Math.max(1, Number(req.body.tileHeight) || 8);
+
   try {
-    const latex = String(req.body.latex || "");
-    const outW = Number(req.body.width) || 512;
-    const outH = Number(req.body.height) || 128;
-    const tileHeight = Math.max(1, Number(req.body.tileHeight) || 8);
-    const fontSize = Number(req.body.fontSize) || 48;
-
-    if (!latex) return res.status(400).json({ error: "missing latex" });
-
-    console.log("[server] Rendering:", latex);
-
-    // 1) Render KaTeX to HTML
+    // Generate KaTeX HTML
     const html = katex.renderToString(latex, {
       throwOnError: false,
       displayMode: true,
-      colorIsTextColor: true
+      output: "html",
     });
 
-    // 2) wrap into an SVG with white text on transparent background
-    const svg = `
-      <svg xmlns="http://www.w3.org/2000/svg" width="${outW}" height="${outH}">
-        <foreignObject width="100%" height="100%">
-          <div xmlns="http://www.w3.org/1999/xhtml"
-               style="
-                 display:flex;
-                 align-items:center;
-                 justify-content:center;
-                 width:100%;
-                 height:100%;
-                 background: transparent;
-                 color: white;
-                 font-size: ${fontSize}px;
-                 font-family: 'Times New Roman', serif;
-               ">
-            ${html}
-          </div>
-        </foreignObject>
-      </svg>
+    // Create HTML template for Puppeteer
+    const pageHTML = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="utf-8"/>
+        <style>
+          body {
+            margin: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: ${width}px;
+            height: ${height}px;
+            background: transparent;
+          }
+          .katex {
+            color: white;
+            font-size: 48px;
+          }
+        </style>
+      </head>
+      <body>${html}</body>
+      </html>
     `;
 
-    // 3) Convert SVG -> PNG (sharp), then to raw RGBA
-    const pngBuffer = await sharp(Buffer.from(svg))
-      .png({ compressionLevel: 9 })
-      .toBuffer();
+    // Launch Puppeteer and render HTML to image
+    const browser = await puppeteer.launch({ headless: "new" });
+    const page = await browser.newPage();
+    await page.setContent(pageHTML, { waitUntil: "networkidle0" });
+    const element = await page.$("body");
+    const pngBuffer = await element.screenshot({ omitBackground: true });
+    await browser.close();
 
-    // make raw RGBA buffer
-    const rawResult = await sharp(pngBuffer)
+    // Convert to raw RGBA
+    const { data, info } = await sharp(pngBuffer)
       .ensureAlpha()
       .raw()
       .toBuffer({ resolveWithObject: true });
 
-    const rawBuffer = rawResult.data;
-    const info = rawResult.info; // width,height,channels
+    const tiles = splitBufferToTiles(data, info.width, info.height, info.channels, tileHeight);
 
-    // 4) Split into tiles (base64 raw bytes)
-    const tiles = splitBufferToTiles(rawBuffer, info.width, info.height, info.channels, tileHeight);
-
-    // optional: include pngBase64 for debugging if you want
-    const pngBase64 = pngBuffer.toString("base64");
-
-    console.log("[server] Render DONE", { width: info.width, height: info.height, tiles: tiles.length });
-
+    console.log("[RenderRaw] ✅ PNG Render successful.");
     res.json({
       width: info.width,
       height: info.height,
       channels: info.channels,
       tileHeight,
       tiles,
-      pngBase64
+      pngBase64: pngBuffer.toString("base64"),
     });
   } catch (err) {
-    console.error("[server] ERROR:", err);
-    res.status(500).json({ error: String(err && err.stack ? err.stack : err) });
+    console.error("[RenderRaw] ❌ ERROR:", err);
+    res.status(500).json({ error: err.toString() });
   }
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`KaTeX renderer listening on ${PORT}`));
+app.listen(PORT, () => console.log(`KaTeX Renderer (puppeteer) running on port ${PORT}`));
