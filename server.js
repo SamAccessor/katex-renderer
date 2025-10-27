@@ -30,18 +30,28 @@ function forceWhite(svgStr) {
 }
 
 // --- Helper: hash LaTeX + scale ---
-function hashKey(latex, scale, fontSize) {
-  return crypto.createHash('md5').update(`${latex}:${scale}:${fontSize}`).digest('hex');
+function hashKey(latex, scale, fontSize, targetWidth, targetHeight) {
+  return crypto
+    .createHash('md5')
+    .update(`${latex}:${scale}:${fontSize}:${targetWidth}:${targetHeight}`)
+    .digest('hex');
 }
 
 // --- /renderRaw endpoint ---
 app.post("/renderRaw", async (req, res) => {
   try {
-    let { latex, tileHeight = 128, fontSize = 48, scale = 3 } = req.body;
+    let {
+      latex,
+      tileHeight = 128,
+      fontSize = 48,
+      scale = 3, // rendering scale
+      targetWidth = 800, // editable image width
+      targetHeight = 600 // editable image height
+    } = req.body;
 
     if (!latex) return res.status(400).json({ error: "Missing 'latex' field" });
 
-    const key = hashKey(latex, scale, fontSize);
+    const key = hashKey(latex, scale, fontSize, targetWidth, targetHeight);
     if (cache.has(key)) return res.json(cache.get(key));
 
     // --- Convert LaTeX → SVG ---
@@ -49,18 +59,24 @@ app.post("/renderRaw", async (req, res) => {
     let innerSVG = adaptor.innerHTML(node);
     innerSVG = forceWhite(innerSVG);
 
-    // Get viewBox
     const viewBox = adaptor.getAttribute(node, "viewBox") || `0 0 ${fontSize*scale} ${fontSize*scale}`;
 
     // Wrap SVG
-    const svgContent = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${viewBox}" width="${fontSize*scale}" height="${fontSize*scale}">${innerSVG}</svg>`;
+    let svgContent = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${viewBox}" width="${fontSize*scale}" height="${fontSize*scale}">${innerSVG}</svg>`;
 
-    // --- Render SVG → PNG buffer ---
-    const pngBuffer = await sharp(Buffer.from(svgContent), { density: 72 * scale })
+    // --- Render SVG → PNG and trim whitespace ---
+    let pngBuffer = await sharp(Buffer.from(svgContent), { density: 72 * scale })
+      .png()
+      .trim() // remove surrounding transparent pixels
+      .toBuffer();
+
+    // --- Optionally scale to fill the editable image ---
+    pngBuffer = await sharp(pngBuffer)
+      .resize(targetWidth, targetHeight, { fit: "contain", background: { r:0,g:0,b:0,alpha:0 } })
       .png()
       .toBuffer();
 
-    // Get image dimensions
+    // --- Get metadata for slicing ---
     const image = sharp(pngBuffer);
     const metadata = await image.metadata();
     const { width, height, channels } = metadata;
