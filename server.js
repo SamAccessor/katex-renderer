@@ -1,52 +1,71 @@
 import express from "express";
 import cors from "cors";
 import bodyParser from "body-parser";
-import { createCanvas, loadImage } from "canvas";
 import katex from "katex";
+import puppeteer from "puppeteer";
 
 const app = express();
 app.use(cors());
-app.use(bodyParser.json({ limit: "5mb" }));
+app.use(bodyParser.json({ limit: "10mb" }));
 
-// Root test route
-app.get("/", (req, res) => {
-  res.status(200).send("✅ KaTeX renderer alive");
-});
-
-// Actual render endpoint
 app.post("/render", async (req, res) => {
+  const { latex } = req.body;
+  if (!latex) return res.status(400).json({ error: "Missing LaTeX input" });
+
+  const html = `
+<html>
+  <head>
+    <style>
+      body {
+        margin: 0;
+        padding: 0;
+        background: transparent;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        height: 100vh;
+      }
+      .math {
+        font-size: 48px;
+        color: white; /* 👈 White KaTeX text */
+      }
+      .katex {
+        color: white !important; /* 👈 Force all KaTeX internal elements to white */
+      }
+    </style>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+  </head>
+  <body>
+    <div class="math">
+      ${katex.renderToString(latex, { throwOnError: false, displayMode: true })}
+    </div>
+  </body>
+</html>
+`;
+
+  let browser;
   try {
-    const { latex, width = 512, height = 128 } = req.body;
-    if (!latex) return res.status(400).json({ error: "Missing 'latex'" });
-
-    // Render LaTeX to HTML string
-    const html = katex.renderToString(latex, {
-      throwOnError: false,
-      displayMode: true,
+    browser = await puppeteer.launch({
+      headless: "new",
+      args: ["--no-sandbox", "--disable-setuid-sandbox"],
     });
 
-    // Simple text draw — (Roblox only needs pixel data)
-    const canvas = createCanvas(width, height);
-    const ctx = canvas.getContext("2d");
-    ctx.fillStyle = "white";
-    ctx.fillRect(0, 0, width, height);
-    ctx.fillStyle = "black";
-    ctx.font = "32px serif";
-    ctx.fillText(html.replace(/<[^>]+>/g, ""), 10, 64);
+    const page = await browser.newPage();
+    await page.setViewport({ width: 800, height: 200 });
+    await page.setContent(html, { waitUntil: "networkidle0" });
 
-    // Convert to PNG → base64
-    const base64 = canvas.toDataURL("image/png").split(",")[1];
-    res.json({
-      ok: true,
-      width,
-      height,
-      base64,
-    });
+    const element = await page.$("body");
+    const imageBuffer = await element.screenshot({ omitBackground: true });
+
+    res.setHeader("Content-Type", "image/png");
+    res.end(imageBuffer);
   } catch (err) {
-    console.error(err);
+    console.error("[Render Error]", err);
     res.status(500).json({ error: err.message });
+  } finally {
+    if (browser) await browser.close();
   }
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log("✅ KaTeX server running on port", PORT));
+app.listen(PORT, () => console.log(`✅ KaTeX Renderer running on port ${PORT}`));
