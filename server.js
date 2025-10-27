@@ -40,7 +40,7 @@ app.post("/renderRaw", async (req, res) => {
       latex,
       tileHeight = 8,
       fontSize = 48,
-      scale = 3 // High-resolution
+      scale = 3 // high-resolution multiplier
     } = req.body;
 
     if (!latex) return res.status(400).json({ error: "Missing 'latex' field" });
@@ -50,22 +50,22 @@ app.post("/renderRaw", async (req, res) => {
       return res.json(cache.get(key));
     }
 
-    // Render LaTeX → SVG with scaled font size
+    // Render LaTeX → SVG
     const node = mathDocument.convert(latex, { display: true, em: fontSize * scale });
     let svgContent = adaptor.innerHTML(node);
     svgContent = `<svg xmlns="http://www.w3.org/2000/svg">${forceWhite(svgContent)}</svg>`;
 
-    // Render SVG → PNG raw buffer
-    let pngObj = await sharp(Buffer.from(svgContent))
+    // Render SVG → PNG raw buffer at high resolution
+    let pngObj = await sharp(Buffer.from(svgContent), { density: 72 * scale })
       .png()
       .trim() // crop transparent borders
       .raw()
-      .toBuffer({ resolveWithObject: true }); // returns { data, info }
+      .toBuffer({ resolveWithObject: true });
 
     const { data, info } = pngObj;
     const { width, height, channels } = info;
 
-    // Manually slice tiles in memory
+    // Slice tiles in memory
     const tiles = [];
     const scaledTileHeight = tileHeight * scale;
     for (let y = 0; y < height; y += scaledTileHeight) {
@@ -83,6 +83,7 @@ app.post("/renderRaw", async (req, res) => {
     const payload = { tiles, width, height, channels };
     cache.set(key, payload); // cache result
     res.json(payload);
+
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message });
