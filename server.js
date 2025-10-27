@@ -2,13 +2,14 @@ import express from "express";
 import cors from "cors";
 import bodyParser from "body-parser";
 import katex from "katex";
-import puppeteer from "puppeteer";
+import puppeteer from "puppeteer"; // normal puppeteer with bundled Chromium
 import sharp from "sharp";
 
 const app = express();
 app.use(cors());
 app.use(bodyParser.json({ limit: "20mb" }));
 
+// Helper: split raw RGBA buffer into tiles
 function splitBufferToTiles(rawBuffer, width, height, channels, tileHeight = 8) {
   const tiles = [];
   const bytesPerRow = width * channels;
@@ -21,6 +22,7 @@ function splitBufferToTiles(rawBuffer, width, height, channels, tileHeight = 8) 
   return tiles;
 }
 
+// POST /renderRaw endpoint
 app.post("/renderRaw", async (req, res) => {
   const latex = String(req.body.latex || "").trim();
   if (!latex) return res.status(400).json({ error: "Missing LaTeX" });
@@ -39,7 +41,7 @@ app.post("/renderRaw", async (req, res) => {
       output: "html",
     });
 
-    // Create HTML template for Puppeteer
+    // Full HTML template for Puppeteer
     const pageHTML = `
       <!DOCTYPE html>
       <html>
@@ -65,15 +67,19 @@ app.post("/renderRaw", async (req, res) => {
       </html>
     `;
 
-    // Launch Puppeteer and render HTML to image
-    const browser = await puppeteer.launch({ headless: "new" });
+    // Launch Puppeteer with bundled Chromium
+    const browser = await puppeteer.launch({
+      headless: true,
+      args: ["--no-sandbox", "--disable-setuid-sandbox"], // required for Render
+    });
+
     const page = await browser.newPage();
     await page.setContent(pageHTML, { waitUntil: "networkidle0" });
     const element = await page.$("body");
     const pngBuffer = await element.screenshot({ omitBackground: true });
     await browser.close();
 
-    // Convert to raw RGBA
+    // Convert to raw RGBA using Sharp
     const { data, info } = await sharp(pngBuffer)
       .ensureAlpha()
       .raw()
@@ -97,4 +103,4 @@ app.post("/renderRaw", async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`KaTeX Renderer (puppeteer) running on port ${PORT}`));
+app.listen(PORT, () => console.log(`KaTeX Renderer running on port ${PORT}`));
