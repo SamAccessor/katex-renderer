@@ -2,14 +2,13 @@ import express from "express";
 import cors from "cors";
 import bodyParser from "body-parser";
 import katex from "katex";
-import puppeteer from "puppeteer"; // normal puppeteer with bundled Chromium
+import puppeteer from "puppeteer";
 import sharp from "sharp";
 
 const app = express();
 app.use(cors());
 app.use(bodyParser.json({ limit: "20mb" }));
 
-// Helper: split raw RGBA buffer into tiles
 function splitBufferToTiles(rawBuffer, width, height, channels, tileHeight = 8) {
   const tiles = [];
   const bytesPerRow = width * channels;
@@ -22,44 +21,36 @@ function splitBufferToTiles(rawBuffer, width, height, channels, tileHeight = 8) 
   return tiles;
 }
 
-// POST /renderRaw endpoint
 app.post("/renderRaw", async (req, res) => {
   const latex = String(req.body.latex || "").trim();
   if (!latex) return res.status(400).json({ error: "Missing LaTeX" });
 
-  console.log("[RenderRaw] Rendering:", latex);
-
-  const width = Number(req.body.width) || 512;
-  const height = Number(req.body.height) || 128;
   const tileHeight = Math.max(1, Number(req.body.tileHeight) || 8);
+  const fontSize = Number(req.body.fontSize) || 48;
 
   try {
-    // Generate KaTeX HTML
+    // Render LaTeX with KaTeX
     const html = katex.renderToString(latex, {
       throwOnError: false,
       displayMode: true,
-      output: "html",
     });
 
-    // Full HTML template for Puppeteer
+    // Dynamic sizing container
     const pageHTML = `
       <!DOCTYPE html>
       <html>
       <head>
         <meta charset="utf-8"/>
+        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.css">
         <style>
           body {
             margin: 0;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            width: ${width}px;
-            height: ${height}px;
+            display: inline-block;
             background: transparent;
           }
           .katex {
+            font-size: ${fontSize}px;
             color: white;
-            font-size: 48px;
           }
         </style>
       </head>
@@ -67,19 +58,25 @@ app.post("/renderRaw", async (req, res) => {
       </html>
     `;
 
-    // Launch Puppeteer with bundled Chromium
-    const browser = await puppeteer.launch({
-      headless: true,
-      args: ["--no-sandbox", "--disable-setuid-sandbox"], // required for Render
-    });
-
+    const browser = await puppeteer.launch({ headless: "new" });
     const page = await browser.newPage();
     await page.setContent(pageHTML, { waitUntil: "networkidle0" });
+
+    // Measure the rendered element dynamically
     const element = await page.$("body");
-    const pngBuffer = await element.screenshot({ omitBackground: true });
+    const boundingBox = await element.boundingBox();
+    const pngBuffer = await element.screenshot({
+      omitBackground: true,
+      clip: {
+        x: boundingBox.x,
+        y: boundingBox.y,
+        width: Math.ceil(boundingBox.width),
+        height: Math.ceil(boundingBox.height),
+      },
+    });
     await browser.close();
 
-    // Convert to raw RGBA using Sharp
+    // Convert PNG to raw RGBA
     const { data, info } = await sharp(pngBuffer)
       .ensureAlpha()
       .raw()
@@ -87,7 +84,6 @@ app.post("/renderRaw", async (req, res) => {
 
     const tiles = splitBufferToTiles(data, info.width, info.height, info.channels, tileHeight);
 
-    console.log("[RenderRaw] ✅ PNG Render successful.");
     res.json({
       width: info.width,
       height: info.height,
@@ -103,4 +99,4 @@ app.post("/renderRaw", async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`KaTeX Renderer running on port ${PORT}`));
+app.listen(PORT, () => console.log(`KaTeX Renderer (puppeteer) running on port ${PORT}`));
