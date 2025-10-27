@@ -1,102 +1,54 @@
 import express from "express";
 import cors from "cors";
 import bodyParser from "body-parser";
-import katex from "katex";
-import puppeteer from "puppeteer";
 import sharp from "sharp";
+import { mathjax } from "mathjax-full/js/mathjax.js";
+import { TeX } from "mathjax-full/js/input/tex.js";
+import { SVG } from "mathjax-full/js/output/svg.js";
+import { liteAdaptor } from "mathjax-full/js/adaptors/liteAdaptor.js";
+import { RegisterHTMLHandler } from "mathjax-full/js/handlers/html.js";
+import { AllPackages } from "mathjax-full/js/input/tex/AllPackages.js";
 
 const app = express();
 app.use(cors());
 app.use(bodyParser.json({ limit: "20mb" }));
 
-function splitBufferToTiles(rawBuffer, width, height, channels, tileHeight = 8) {
-  const tiles = [];
-  const bytesPerRow = width * channels;
-  for (let y = 0; y < height; y += tileHeight) {
-    const rows = Math.min(tileHeight, height - y);
-    const start = y * bytesPerRow;
-    const end = start + bytesPerRow * rows;
-    tiles.push(rawBuffer.slice(start, end).toString("base64"));
-  }
-  return tiles;
-}
+// MathJax setup
+const adaptor = liteAdaptor();
+RegisterHTMLHandler(adaptor);
+
+const tex = new TeX({ packages: AllPackages });
+const svg = new SVG({ fontCache: "none" });
+const mathDocument = mathjax.document("", { InputJax: tex, OutputJax: svg });
 
 app.post("/renderRaw", async (req, res) => {
-  const latex = String(req.body.latex || "").trim();
-  if (!latex) return res.status(400).json({ error: "Missing LaTeX" });
-
-  const tileHeight = Math.max(1, Number(req.body.tileHeight) || 8);
-  const fontSize = Number(req.body.fontSize) || 48;
-
   try {
-    // Render LaTeX with KaTeX
-    const html = katex.renderToString(latex, {
-      throwOnError: false,
-      displayMode: true,
-    });
+    const { latex } = req.body;
+    if (!latex) return res.status(400).json({ error: "Missing 'latex' field" });
 
-    // Dynamic sizing container
-    const pageHTML = `
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <meta charset="utf-8"/>
-        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.css">
-        <style>
-          body {
-            margin: 0;
-            display: inline-block;
-            background: transparent;
-          }
-          .katex {
-            font-size: ${fontSize}px;
-            color: white;
-          }
-        </style>
-      </head>
-      <body>${html}</body>
-      </html>
-    `;
+    // Convert LaTeX to MathJax node
+    const node = mathDocument.convert(latex, { display: true });
 
-    const browser = await puppeteer.launch({ headless: "new" });
-    const page = await browser.newPage();
-    await page.setContent(pageHTML, { waitUntil: "networkidle0" });
+    // Extract SVG string
+    let svgContent = adaptor.innerHTML(node);
 
-    // Measure the rendered element dynamically
-    const element = await page.$("body");
-    const boundingBox = await element.boundingBox();
-    const pngBuffer = await element.screenshot({
-      omitBackground: true,
-      clip: {
-        x: boundingBox.x,
-        y: boundingBox.y,
-        width: Math.ceil(boundingBox.width),
-        height: Math.ceil(boundingBox.height),
-      },
-    });
-    await browser.close();
+    // Wrap SVG and force text to white
+svgContent = `<svg xmlns="http://www.w3.org/2000/svg">${svgContent}</svg>`;
 
-    // Convert PNG to raw RGBA
-    const { data, info } = await sharp(pngBuffer)
-      .ensureAlpha()
-      .raw()
-      .toBuffer({ resolveWithObject: true });
+// Replace all fill colors with white
+svgContent = svgContent.replace(/fill=".*?"/g, 'fill="white"');
 
-    const tiles = splitBufferToTiles(data, info.width, info.height, info.channels, tileHeight);
+// Convert to PNG (transparent background)
+const pngBuffer = await sharp(Buffer.from(svgContent))
+  .png()
+  .toBuffer();
 
-    res.json({
-      width: info.width,
-      height: info.height,
-      channels: info.channels,
-      tileHeight,
-      tiles,
-      pngBase64: pngBuffer.toString("base64"),
-    });
+    res.json({ pngBase64: pngBuffer.toString("base64") });
   } catch (err) {
-    console.error("[RenderRaw] ❌ ERROR:", err);
-    res.status(500).json({ error: err.toString() });
+    console.error(err);
+    res.status(500).json({ error: err.message });
   }
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`KaTeX Renderer (puppeteer) running on port ${PORT}`));
+const PORT = 3000;
+app.listen(PORT, () => console.log(`Server running on http://localhost:${PORT}`));

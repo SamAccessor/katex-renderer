@@ -16,6 +16,7 @@
     "cors": "^2.8.5",
     "express": "^5.1.0",
     "katex": "^0.16.25",
+    "mathjax": "^4.0.0",
     "mathjax-full": "^3.2.1",
     "node-html-to-image": "^5.0.0",
     "puppeteer": "^24.26.1",
