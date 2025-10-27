@@ -3,12 +3,12 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node server.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "description": "",
   "type": "module",
   "dependencies": {
     "body-parser": "^2.2.0",
@@ -16,5 +16,14 @@
     "express": "^5.1.0",
     "katex": "^0.16.25",
     "sharp": "^0.34.4"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SamAccessor/katex-renderer.git"
+  },
+  "bugs": {
+    "url": "https://github.com/SamAccessor/katex-renderer/issues"
+  },
+  "homepage": "https://github.com/SamAccessor/katex-renderer#readme",
+  "description": ""
 }
