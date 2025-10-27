@@ -20,30 +20,35 @@ const tex = new TeX({ packages: AllPackages });
 const svg = new SVG({ fontCache: "none" });
 const mathDocument = mathjax.document("", { InputJax: tex, OutputJax: svg });
 
-// Helper: force all text to white
+// Helper: force all fills to white
 function forceWhite(svgStr) {
   return svgStr.replace(/fill=".*?"/g, 'fill="white"');
 }
 
 app.post("/renderRaw", async (req, res) => {
   try {
-    let { latex, tileHeight = 8, fontSize = 48 } = req.body;
+    let {
+      latex,
+      tileHeight = 8,
+      fontSize = 48,
+      scale = 3 // High-resolution scale factor
+    } = req.body;
+
     if (!latex) return res.status(400).json({ error: "Missing 'latex' field" });
 
-    // Convert LaTeX to SVG
-    const node = mathDocument.convert(latex, { display: true });
+    // Convert LaTeX to SVG with scaled font size
+    const node = mathDocument.convert(latex, { display: true, em: fontSize * scale });
     let svgContent = adaptor.innerHTML(node);
     svgContent = `<svg xmlns="http://www.w3.org/2000/svg">${forceWhite(svgContent)}</svg>`;
 
-    // Render SVG to PNG buffer
+    // Render SVG → PNG
     let pngBuffer = await sharp(Buffer.from(svgContent))
       .png()
       .toBuffer();
 
-    // Crop the PNG to its non-transparent bounding box
-    const metadata = await sharp(pngBuffer).metadata();
+    // Crop transparent borders
     const trimmed = await sharp(pngBuffer)
-      .trim() // remove transparent borders
+      .trim()
       .toBuffer();
 
     const trimmedMeta = await sharp(trimmed).metadata();
@@ -51,10 +56,13 @@ app.post("/renderRaw", async (req, res) => {
     const height = trimmedMeta.height;
     const channels = 4; // RGBA
 
-    // Split into tiles for Roblox
+    // Adjust tileHeight for scaling
+    const scaledTileHeight = tileHeight * scale;
+
+    // Split into tiles
     const tiles = [];
-    for (let y = 0; y < height; y += tileHeight) {
-      const rows = Math.min(tileHeight, height - y);
+    for (let y = 0; y < height; y += scaledTileHeight) {
+      const rows = Math.min(scaledTileHeight, height - y);
       const tileBuffer = await sharp(trimmed)
         .extract({ left: 0, top: y, width, height: rows })
         .raw()
