@@ -16,39 +16,46 @@ app.use(bodyParser.json({ limit: "20mb" }));
 // MathJax setup
 const adaptor = liteAdaptor();
 RegisterHTMLHandler(adaptor);
-
 const tex = new TeX({ packages: AllPackages });
 const svg = new SVG({ fontCache: "none" });
 const mathDocument = mathjax.document("", { InputJax: tex, OutputJax: svg });
 
-// helper: force all fills white
+// Helper: force all text to white
 function forceWhite(svgStr) {
   return svgStr.replace(/fill=".*?"/g, 'fill="white"');
 }
 
 app.post("/renderRaw", async (req, res) => {
   try {
-    const { latex, width = 512, height = 128, tileHeight = 8 } = req.body;
-
+    let { latex, tileHeight = 8, fontSize = 48 } = req.body;
     if (!latex) return res.status(400).json({ error: "Missing 'latex' field" });
 
-    // MathJax → SVG
+    // Convert LaTeX to SVG
     const node = mathDocument.convert(latex, { display: true });
     let svgContent = adaptor.innerHTML(node);
     svgContent = `<svg xmlns="http://www.w3.org/2000/svg">${forceWhite(svgContent)}</svg>`;
 
-    // Sharp → PNG buffer
-    const pngBuffer = await sharp(Buffer.from(svgContent))
-      .resize(width, height)
+    // Render SVG to PNG buffer
+    let pngBuffer = await sharp(Buffer.from(svgContent))
       .png()
       .toBuffer();
 
-    // Split into tiles (tileHeight rows each)
+    // Crop the PNG to its non-transparent bounding box
+    const metadata = await sharp(pngBuffer).metadata();
+    const trimmed = await sharp(pngBuffer)
+      .trim() // remove transparent borders
+      .toBuffer();
+
+    const trimmedMeta = await sharp(trimmed).metadata();
+    const width = trimmedMeta.width;
+    const height = trimmedMeta.height;
     const channels = 4; // RGBA
+
+    // Split into tiles for Roblox
     const tiles = [];
     for (let y = 0; y < height; y += tileHeight) {
       const rows = Math.min(tileHeight, height - y);
-      const tileBuffer = await sharp(pngBuffer)
+      const tileBuffer = await sharp(trimmed)
         .extract({ left: 0, top: y, width, height: rows })
         .raw()
         .toBuffer();
