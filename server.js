@@ -50,13 +50,19 @@ app.post("/renderRaw", async (req, res) => {
       return res.json(cache.get(key));
     }
 
-    // Render LaTeX → SVG
-    const node = mathDocument.convert(latex, { display: true, em: fontSize * scale });
-    let svgContent = adaptor.innerHTML(node);
-    svgContent = `<svg xmlns="http://www.w3.org/2000/svg">${forceWhite(svgContent)}</svg>`;
+    // --- Render LaTeX → SVG ---
+    const node = mathDocument.convert(latex, { display: true, em: fontSize });
+    let innerSVG = adaptor.innerHTML(node);
+    innerSVG = forceWhite(innerSVG);
 
-    // Render SVG → PNG raw buffer at high resolution
-    let pngObj = await sharp(Buffer.from(svgContent), { density: 72 * scale })
+    // Grab viewBox from MathJax node
+    const viewBox = node.attributes.get("viewBox") || `0 0 ${fontSize*scale} ${fontSize*scale}`;
+
+    // Wrap in high-res SVG
+    const svgContent = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${viewBox}" width="${fontSize*scale}" height="${fontSize*scale}">${innerSVG}</svg>`;
+
+    // --- Convert SVG → PNG (raw buffer) ---
+    const pngObj = await sharp(Buffer.from(svgContent), { density: 72 * scale })
       .png()
       .trim() // crop transparent borders
       .raw()
@@ -65,7 +71,7 @@ app.post("/renderRaw", async (req, res) => {
     const { data, info } = pngObj;
     const { width, height, channels } = info;
 
-    // Slice tiles in memory
+    // --- Slice tiles ---
     const tiles = [];
     const scaledTileHeight = tileHeight * scale;
     for (let y = 0; y < height; y += scaledTileHeight) {
