@@ -21,29 +21,41 @@ const tex = new TeX({ packages: AllPackages });
 const svg = new SVG({ fontCache: "none" });
 const mathDocument = mathjax.document("", { InputJax: tex, OutputJax: svg });
 
+// helper: force all fills white
+function forceWhite(svgStr) {
+  return svgStr.replace(/fill=".*?"/g, 'fill="white"');
+}
+
 app.post("/renderRaw", async (req, res) => {
   try {
-    const { latex } = req.body;
+    const { latex, width = 512, height = 128, tileHeight = 8 } = req.body;
+
     if (!latex) return res.status(400).json({ error: "Missing 'latex' field" });
 
-    // Convert LaTeX to MathJax node
+    // MathJax → SVG
     const node = mathDocument.convert(latex, { display: true });
-
-    // Extract SVG string
     let svgContent = adaptor.innerHTML(node);
+    svgContent = `<svg xmlns="http://www.w3.org/2000/svg">${forceWhite(svgContent)}</svg>`;
 
-    // Wrap SVG and force text to white
-svgContent = `<svg xmlns="http://www.w3.org/2000/svg">${svgContent}</svg>`;
+    // Sharp → PNG buffer
+    const pngBuffer = await sharp(Buffer.from(svgContent))
+      .resize(width, height)
+      .png()
+      .toBuffer();
 
-// Replace all fill colors with white
-svgContent = svgContent.replace(/fill=".*?"/g, 'fill="white"');
+    // Split into tiles (tileHeight rows each)
+    const channels = 4; // RGBA
+    const tiles = [];
+    for (let y = 0; y < height; y += tileHeight) {
+      const rows = Math.min(tileHeight, height - y);
+      const tileBuffer = await sharp(pngBuffer)
+        .extract({ left: 0, top: y, width, height: rows })
+        .raw()
+        .toBuffer();
+      tiles.push(tileBuffer.toString("base64"));
+    }
 
-// Convert to PNG (transparent background)
-const pngBuffer = await sharp(Buffer.from(svgContent))
-  .png()
-  .toBuffer();
-
-    res.json({ pngBase64: pngBuffer.toString("base64") });
+    res.json({ tiles, width, height, channels });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message });
