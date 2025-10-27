@@ -50,39 +50,42 @@ app.post("/renderRaw", async (req, res) => {
       return res.json(cache.get(key));
     }
 
-   // --- Render LaTeX → SVG ---
-const node = mathDocument.convert(latex, { display: true, em: fontSize });
-let innerSVG = adaptor.innerHTML(node);
-innerSVG = forceWhite(innerSVG);
+    // --- Render LaTeX → SVG ---
+    const node = mathDocument.convert(latex, { display: true, em: fontSize });
+    let innerSVG = adaptor.innerHTML(node);
+    innerSVG = forceWhite(innerSVG);
 
-// Grab viewBox safely using liteAdaptor
-const viewBox = adaptor.getAttribute(node, "viewBox") || `0 0 ${fontSize*scale} ${fontSize*scale}`;
+    // Grab viewBox safely using liteAdaptor
+    const viewBox = adaptor.getAttribute(node, "viewBox") || `0 0 ${fontSize * scale} ${fontSize * scale}`;
 
-// Wrap in high-res SVG
-const svgContent = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${viewBox}" width="${fontSize*scale}" height="${fontSize*scale}">${innerSVG}</svg>`;
+    // Wrap in high-res SVG
+    const svgContent = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${viewBox}" width="${fontSize*scale}" height="${fontSize*scale}">${innerSVG}</svg>`;
 
-    // --- Convert SVG → PNG (raw buffer) ---
+    // --- Convert SVG → PNG (raw buffer) ---  
+    // NOTE: removed .trim() to keep full image
     const pngObj = await sharp(Buffer.from(svgContent), { density: 72 * scale })
       .png()
-      .trim() // crop transparent borders
       .raw()
       .toBuffer({ resolveWithObject: true });
 
     const { data, info } = pngObj;
     const { width, height, channels } = info;
 
-    // --- Slice tiles ---
+    // --- Slice tiles correctly ---
     const tiles = [];
-    const scaledTileHeight = tileHeight * scale;
+    const scaledTileHeight = tileHeight * scale; // number of rows per tile
+
     for (let y = 0; y < height; y += scaledTileHeight) {
-      const rows = Math.min(scaledTileHeight, height - y);
+      const rows = Math.min(scaledTileHeight, height - y); // last tile may be smaller
       const tileData = Buffer.alloc(rows * width * channels);
+
       for (let row = 0; row < rows; row++) {
         const srcStart = ((y + row) * width * channels);
         const srcEnd = srcStart + (width * channels);
         const destStart = row * width * channels;
         data.copy(tileData, destStart, srcStart, srcEnd);
       }
+
       tiles.push(tileData.toString("base64"));
     }
 
