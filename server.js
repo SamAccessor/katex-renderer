@@ -14,83 +14,71 @@ const app = express();
 app.use(cors());
 app.use(bodyParser.json({ limit: "20mb" }));
 
-// MathJax setup
+// --- MathJax setup ---
 const adaptor = liteAdaptor();
 RegisterHTMLHandler(adaptor);
 const tex = new TeX({ packages: AllPackages });
 const svg = new SVG({ fontCache: "none" });
 const mathDocument = mathjax.document("", { InputJax: tex, OutputJax: svg });
 
-// In-memory cache
+// --- In-memory cache ---
 const cache = new Map();
 
-// Helper: force all fills to white
+// --- Helper: force all fills to white ---
 function forceWhite(svgStr) {
   return svgStr.replace(/fill=".*?"/g, 'fill="white"');
 }
 
-// Hash LaTeX + scale for caching
+// --- Helper: hash LaTeX + scale ---
 function hashKey(latex, scale, fontSize) {
   return crypto.createHash('md5').update(`${latex}:${scale}:${fontSize}`).digest('hex');
 }
 
+// --- /renderRaw endpoint ---
 app.post("/renderRaw", async (req, res) => {
   try {
-    let {
-      latex,
-      tileHeight = 8,
-      fontSize = 48,
-      scale = 3 // high-resolution multiplier
-    } = req.body;
+    let { latex, tileHeight = 128, fontSize = 48, scale = 3 } = req.body;
 
     if (!latex) return res.status(400).json({ error: "Missing 'latex' field" });
 
     const key = hashKey(latex, scale, fontSize);
-    if (cache.has(key)) {
-      return res.json(cache.get(key));
-    }
+    if (cache.has(key)) return res.json(cache.get(key));
 
-    // --- Render LaTeX → SVG ---
+    // --- Convert LaTeX → SVG ---
     const node = mathDocument.convert(latex, { display: true, em: fontSize });
     let innerSVG = adaptor.innerHTML(node);
     innerSVG = forceWhite(innerSVG);
 
-    // Grab viewBox safely using liteAdaptor
-    const viewBox = adaptor.getAttribute(node, "viewBox") || `0 0 ${fontSize * scale} ${fontSize * scale}`;
+    // Get viewBox
+    const viewBox = adaptor.getAttribute(node, "viewBox") || `0 0 ${fontSize*scale} ${fontSize*scale}`;
 
-    // Wrap in high-res SVG
+    // Wrap SVG
     const svgContent = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${viewBox}" width="${fontSize*scale}" height="${fontSize*scale}">${innerSVG}</svg>`;
 
-    // --- Convert SVG → PNG (raw buffer) ---  
-    // NOTE: removed .trim() to keep full image
-    const pngObj = await sharp(Buffer.from(svgContent), { density: 72 * scale })
+    // --- Render SVG → PNG buffer ---
+    const pngBuffer = await sharp(Buffer.from(svgContent), { density: 72 * scale })
       .png()
-      .raw()
-      .toBuffer({ resolveWithObject: true });
+      .toBuffer();
 
-    const { data, info } = pngObj;
-    const { width, height, channels } = info;
+    // Get image dimensions
+    const image = sharp(pngBuffer);
+    const metadata = await image.metadata();
+    const { width, height, channels } = metadata;
 
-    // --- Slice tiles correctly ---
+    // --- Slice tiles vertically (full width) ---
     const tiles = [];
-    const scaledTileHeight = tileHeight * scale; // number of rows per tile
+    for (let y = 0; y < height; y += tileHeight) {
+      const h = Math.min(tileHeight, height - y);
+      const tileBuffer = await sharp(pngBuffer)
+        .extract({ left: 0, top: y, width: width, height: h })
+        .raw()
+        .toBuffer();
 
-    for (let y = 0; y < height; y += scaledTileHeight) {
-      const rows = Math.min(scaledTileHeight, height - y); // last tile may be smaller
-      const tileData = Buffer.alloc(rows * width * channels);
-
-      for (let row = 0; row < rows; row++) {
-        const srcStart = ((y + row) * width * channels);
-        const srcEnd = srcStart + (width * channels);
-        const destStart = row * width * channels;
-        data.copy(tileData, destStart, srcStart, srcEnd);
-      }
-
-      tiles.push(tileData.toString("base64"));
+      tiles.push(tileBuffer.toString("base64"));
     }
 
     const payload = { tiles, width, height, channels };
-    cache.set(key, payload); // cache result
+    cache.set(key, payload);
     res.json(payload);
 
   } catch (err) {
