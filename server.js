@@ -1,141 +1,140 @@
-// server.js
-import express from 'express';
-import bodyParser from 'body-parser';
-import cors from 'cors';
-import sharp from 'sharp';
-
-import { mathjax } from 'mathjax-full/js/mathjax.js';
-import { TeX } from 'mathjax-full/js/input/tex.js';
-import { SVG } from 'mathjax-full/js/output/svg.js';
-import { liteAdaptor } from 'mathjax-full/js/adaptors/liteAdaptor.js';
-import { RegisterHTMLHandler } from 'mathjax-full/js/handlers/html.js';
+import express from "express";
+import cors from "cors";
+import bodyParser from "body-parser";
+import sharp from "sharp";
+import { mathjax } from "mathjax-full/js/mathjax.js";
+import { TeX } from "mathjax-full/js/input/tex.js";
+import { SVG } from "mathjax-full/js/output/svg.js";
+import { liteAdaptor } from "mathjax-full/js/adaptors/liteAdaptor.js";
+import { RegisterHTMLHandler } from "mathjax-full/js/handlers/html.js";
+import { AllPackages } from "mathjax-full/js/input/tex/AllPackages.js";
 
 const app = express();
-app.use(bodyParser.json({ limit: '1mb' }));
 app.use(cors());
-
-const MAX_SIZE = 1024;
-const EX_TO_PX = 8;
+app.use(bodyParser.json({ limit: "10mb" }));
 
 // MathJax setup
 const adaptor = liteAdaptor();
 RegisterHTMLHandler(adaptor);
-const tex = new TeX({ packages: ['base', 'ams'] });
-const svg = new SVG({ fontCache: 'none' });
-const doc = mathjax.document('', { InputJax: tex, OutputJax: svg });
+const tex = new TeX({ packages: AllPackages });
+const svg = new SVG({ fontCache: "none" });
+const mathDocument = mathjax.document("", { InputJax: tex, OutputJax: svg });
 
-function getSVGPixelDims(svgString) {
-  const wMatch = svgString.match(/width="([\d.]+)ex"/);
-  const hMatch = svgString.match(/height="([\d.]+)ex"/);
-  if (wMatch && hMatch) {
-    const w = Math.max(1, Math.ceil(parseFloat(wMatch[1]) * EX_TO_PX));
-    const h = Math.max(1, Math.ceil(parseFloat(hMatch[1]) * EX_TO_PX));
-    return { width: w, height: h };
-  }
-  return { width: 256, height: 128 };
-}
-
-function forceWhite(svgString) {
-  return svgString
-    .replace(/fill="black"/g, 'fill="white"')
-    .replace(/fill="#000"/g, 'fill="#fff"')
-    .replace(/fill="#000000"/g, 'fill="#ffffff"');
-}
-
-function renderFormulaToSVG(formula) {
-  // DO NOT WRAP with $$...$$!
-  // Pass raw LaTeX string, e.g. "\\frac{a}{b}"
-  const node = doc.convert(formula, { display: true });
-  let svg = adaptor.outerHTML(node);
-
-  if (!svg || !svg.trim().startsWith('<svg')) {
-    // Fallback minimal SVG with text to avoid pipeline break
-    const safeText = (formula || '').replace(/[<>]/g, '');
-    svg = `<svg xmlns="http://www.w3.org/2000/svg" width="40ex" height="3ex"><text x="0" y="20" fill="white" font-size="16" font-family="Arial">${safeText}</text></svg>`;
-  }
-
-  svg = forceWhite(svg);
-  const dims = getSVGPixelDims(svg);
-  // Strip outer <svg> tags so we can compose later
-  const inner = svg.replace(/^<svg[^>]*>/, '').replace(/<\/svg>$/, '');
-  return { inner, width: dims.width, height: dims.height };
-}
-
-function composeStackedSVG(frags) {
-  let y = 0;
-  let maxW = 1;
-  const gap = 10;
-  const rows = [];
-
-  for (const f of frags) {
-    rows.push(`<g transform="translate(0,${y})">${f.inner}</g>`);
-    y += f.height + gap;
-    maxW = Math.max(maxW, f.width);
-  }
-
-  const canvasW = Math.min(maxW, MAX_SIZE);
-  const canvasH = Math.min(y - gap, MAX_SIZE);
-
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${canvasW}" height="${canvasH}">
-${rows.join('\n')}
-</svg>`;
-
-  return { svg, width: canvasW, height: canvasH };
-}
-
-async function svgToRGBA(svgString, targetW, targetH) {
-  const { data, info } = await sharp(Buffer.from(svgString))
-    .resize(targetW, targetH, {
-      fit: 'contain',
-      background: { r: 0, g: 0, b: 0, alpha: 0 },
-      kernel: sharp.kernel.lanczos3,
-    })
-    .raw()
-    .toBuffer({ resolveWithObject: true });
-  return { data, info };
-}
-
-app.post('/render', async (req, res) => {
-  try {
-    let formulas = req.body.formulas;
-    if (!Array.isArray(formulas)) {
-      const single = req.body.formula;
-      if (typeof single === 'string' && single.trim().length > 0) {
-        formulas = [single];
+function findBBox(data, width, height, channels, alphaThreshold = 1) {
+  let minX = width, minY = height, maxX = -1, maxY = -1;
+  for (let y = 0; y < height; y++) {
+    const row = y * width * channels;
+    for (let x = 0; x < width; x++) {
+      const alpha = data[row + x * channels + 3];
+      if (alpha > alphaThreshold) {
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
       }
     }
-    if (!Array.isArray(formulas) || formulas.length === 0) {
-      return res.status(400).json({ error: 'Provide formula (string) or formulas (array of strings).' });
+  }
+  if (maxX < minX || maxY < minY) return null;
+  return { left: minX, top: minY, width: maxX - minX + 1, height: maxY - minY + 1 };
+}
+
+app.post("/render", async (req, res) => {
+  try {
+    const {
+      formulas,
+      scale = 6,
+      margin = 2
+    } = req.body;
+
+    // Accept either a single formula or an array
+    let formulaList = [];
+    if (Array.isArray(formulas)) {
+      formulaList = formulas;
+    } else if (typeof req.body.formula === "string") {
+      formulaList = [req.body.formula];
+    } else {
+      return res.status(400).json({ error: "Missing or invalid LaTeX input" });
     }
 
-    // Render each formula to an SVG fragment + measure
-    const frags = formulas.map(renderFormulaToSVG);
+    // Render each formula as display math and stack vertically
+    const svgRows = [];
+    let totalHeight = 0, maxWidth = 0;
+    for (const latex of formulaList) {
+      // DO NOT WRAP with $$...$$!
+      const node = mathDocument.convert(latex, { display: true });
+      const inner = adaptor.innerHTML(node);
+      const viewBox = adaptor.getAttribute(node, "viewBox") || "0 0 128 64";
+      // Wrap each formula in its own SVG for measurement
+      const svgWrapped = `
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="${viewBox}">
+          <style>
+            * { fill: white !important; stroke: white !important; }
+          </style>
+          ${inner}
+        </svg>
+      `;
+      // Measure with sharp
+      const meta = await sharp(Buffer.from(svgWrapped), { density: 72 * scale }).metadata();
+      svgRows.push({ svg: svgWrapped, width: meta.width, height: meta.height });
+      totalHeight += meta.height + margin * scale;
+      maxWidth = Math.max(maxWidth, meta.width);
+    }
 
-    // Compose stacked output
-    let { svg, width, height } = composeStackedSVG(frags);
+    // Compose a single SVG stacking all formulas vertically
+    let y = 0;
+    const stackedSVG = `
+      <svg xmlns="http://www.w3.org/2000/svg" width="${maxWidth}" height="${totalHeight}">
+        <style>
+          * { fill: white !important; stroke: white !important; }
+        </style>
+        ${svgRows.map(row => {
+          const g = `<g transform="translate(0,${y})">${row.svg.replace(/^<svg[^>]*>|<\/svg>$/g, "")}</g>`;
+          y += row.height + margin * scale;
+          return g;
+        }).join("\n")}
+      </svg>
+    `;
 
-    // Clamp to MAX_SIZE with aspect preservation (never upscale)
-    const scale = Math.min(MAX_SIZE / width, MAX_SIZE / height, 1);
-    const targetW = Math.max(1, Math.floor(width * scale));
-    const targetH = Math.max(1, Math.floor(height * scale));
+    // Rasterize, crop, and output a single RGBA buffer
+    const density = 72 * scale;
+    const padded = await sharp(Buffer.from(stackedSVG), { density })
+      .png({ compressionLevel: 0 })
+      .toBuffer();
 
-    // Rasterize to RGBA (transparent background)
-    const { data, info } = await svgToRGBA(svg, targetW, targetH);
+    const rawResult = await sharp(padded).raw().toBuffer({ resolveWithObject: true });
+    const { data, info } = rawResult;
+    const bbox = findBBox(data, info.width, info.height, info.channels) || {
+      left: 0, top: 0, width: info.width, height: info.height
+    };
 
-    const base64 = Buffer.from(data).toString('base64');
+    const cropped = await sharp(padded)
+      .extract(bbox)
+      .png({ compressionLevel: 0 })
+      .toBuffer();
+
+    const meta = await sharp(cropped).metadata();
+    const finalW = meta.width;
+    const finalH = meta.height;
+    const channels = 4;
+
+    // Get raw RGBA buffer for Roblox
+    const fullRaw = await sharp(cropped).raw().toBuffer();
+    const base64 = Buffer.from(fullRaw).toString("base64");
+
     res.json({
-      width: info.width,
-      height: info.height,
-      channels: info.channels,
-      rgbaBase64: base64,
+      width: finalW,
+      height: finalH,
+      channels,
+      rgbaBase64: base64
     });
+
   } catch (err) {
-    console.error('Render error:', err);
-    res.status(500).json({ error: 'Render failed: ' + (err?.message || String(err)) });
+    console.error("[render] ERROR:", err);
+    res.status(500).json({ error: err.message || "Unknown error" });
   }
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`MathJax renderer (display math, white-on-transparent) listening on port ${PORT}`);
-});
+app.listen(PORT, () =>
+  console.log(`✅ MathJax renderer running at http://localhost:${PORT}`)
+);
