@@ -24,7 +24,6 @@ const tex = new TeX({ packages: ['base', 'ams'] });
 const svg = new SVG({ fontCache: 'none' });
 const doc = mathjax.document('', { InputJax: tex, OutputJax: svg });
 
-// Extract pixel width/height from MathJax SVG’s ex-based attributes
 function getSVGPixelDims(svgString) {
   const wMatch = svgString.match(/width="([\d.]+)ex"/);
   const hMatch = svgString.match(/height="([\d.]+)ex"/);
@@ -36,7 +35,6 @@ function getSVGPixelDims(svgString) {
   return { width: 256, height: 128 };
 }
 
-// Force all fills to white
 function forceWhite(svgString) {
   return svgString
     .replace(/fill="black"/g, 'fill="white"')
@@ -44,9 +42,9 @@ function forceWhite(svgString) {
     .replace(/fill="#000000"/g, 'fill="#ffffff"');
 }
 
-// Render a single formula to an SVG fragment + measured size
 function renderFormulaToSVG(formula) {
   // DO NOT WRAP with $$...$$!
+  // Pass raw LaTeX string, e.g. "\\frac{a}{b}"
   const node = doc.convert(formula, { display: true });
   let svg = adaptor.outerHTML(node);
 
@@ -63,7 +61,6 @@ function renderFormulaToSVG(formula) {
   return { inner, width: dims.width, height: dims.height };
 }
 
-// Compose multiple formula SVG fragments stacked vertically into one SVG
 function composeStackedSVG(frags) {
   let y = 0;
   let maxW = 1;
@@ -86,7 +83,6 @@ ${rows.join('\n')}
   return { svg, width: canvasW, height: canvasH };
 }
 
-// Rasterize SVG -> raw RGBA buffer using Sharp, keep transparency
 async function svgToRGBA(svgString, targetW, targetH) {
   const { data, info } = await sharp(Buffer.from(svgString))
     .resize(targetW, targetH, {
@@ -99,7 +95,6 @@ async function svgToRGBA(svgString, targetW, targetH) {
   return { data, info };
 }
 
-// POST /render
 app.post('/render', async (req, res) => {
   try {
     let formulas = req.body.formulas;
