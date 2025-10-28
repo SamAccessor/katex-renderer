@@ -15,7 +15,7 @@ app.use(cors());
 
 const MAX_SIZE = 1024;
 
-// MathJax v3 setup (done once, not per request)
+// MathJax v3 setup
 const adaptor = liteAdaptor();
 RegisterHTMLHandler(adaptor);
 const tex = new TeX({ packages: ['base', 'ams'] });
@@ -36,7 +36,6 @@ function getSVGDimensions(svgString) {
 
 // Utility: Replace all fill colors in SVG with white
 function svgToWhite(svgString) {
-  // Replace common black fills with white
   return svgString
     .replace(/fill="black"/g, 'fill="white"')
     .replace(/fill="#000"/g, 'fill="#fff"')
@@ -87,6 +86,7 @@ app.post('/render', async (req, res) => {
       renderTimeMs: elapsed
     });
   } catch (err) {
+    console.error('Render error:', err);
     return res.status(500).json({ error: String(err) });
   }
 });
