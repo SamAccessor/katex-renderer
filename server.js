@@ -14,7 +14,7 @@ const app = express();
 app.use(cors());
 app.use(bodyParser.json({ limit: "50mb" }));
 
-// Setup MathJax (TeX → SVG)
+// Setup MathJax
 const adaptor = liteAdaptor();
 RegisterHTMLHandler(adaptor);
 const tex = new TeX({ packages: AllPackages });
@@ -46,14 +46,14 @@ function findBBox(data, width, height, channels, alphaThreshold = 1) {
   return { left: minX, top: minY, width: maxX - minX + 1, height: maxY - minY + 1 };
 }
 
-// 🔹 Render route (exact pixel output, no fontSize logic)
+// 🔹 Render route (white text on transparent background)
 app.post("/renderRaw", async (req, res) => {
   try {
     const {
       latex,
-      scale = 6,       // High render DPI multiplier
-      margin = 2,       // Padding around math
-      tileHeight = 128  // Tile rows
+      scale = 6,
+      margin = 2,
+      tileHeight = 128
     } = req.body;
 
     if (!latex) return res.status(400).json({ error: "Missing latex" });
@@ -64,8 +64,17 @@ app.post("/renderRaw", async (req, res) => {
     // Step 1: Render LaTeX → SVG
     const node = mathDocument.convert(latex, { display: true });
     let svg = adaptor.innerHTML(node);
+
+    // Inject white fill + no background
+    const styledSVG = svg.replace(
+      /<svg([^>]*)>/,
+      `<svg$1><style>
+        * { fill: white !important; stroke: white !important; }
+      </style>`
+    );
+
     const viewBox = adaptor.getAttribute(node, "viewBox");
-    const svgWrapped = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${viewBox}" style="background:none">${svg}</svg>`;
+    const svgWrapped = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${viewBox}" style="background:none">${styledSVG}</svg>`;
 
     // Step 2: Rasterize SVG → PNG @ high density
     const density = 72 * scale;
@@ -118,6 +127,5 @@ app.post("/renderRaw", async (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () =>
-  console.log(`✅ High-res KaTeX JSON renderer running at http://localhost:${PORT}`)
+  console.log(`✅ White MathJax renderer running at http://localhost:${PORT}`)
 );
-
