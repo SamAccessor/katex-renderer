@@ -88,9 +88,7 @@ app.post("/renderRaw", async (req, res) => {
   }
 });
 
-
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () =>
   console.log(`✅ White MathJax renderer running safely at http://localhost:${PORT}`)
 );
-
