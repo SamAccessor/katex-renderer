@@ -47,13 +47,14 @@ function renderStackedSVG(formulas) {
   let maxWidth = 0;
   let totalHeight = 0;
 
-  for (const formula of formulas) {
+  for (const formulaRaw of formulas) {
+    const formula = preprocessFormula(formulaRaw);
     const node = mj.convert(formula, { display: true });
     let svgString = adaptor.outerHTML(node);
     svgString = svgToWhite(svgString);
 
     if (!svgString.trim().startsWith('<svg')) {
-      throw new Error('MathJax did not produce a valid SVG for formula: ' + formula);
+      throw new Error('MathJax did not produce a valid SVG for formula: ' + formulaRaw);
     }
 
     const { width, height } = getSVGDimensions(svgString);
@@ -79,6 +80,7 @@ function renderStackedSVG(formulas) {
   `;
   return { svg: stackedSVG, width: maxWidth, height: totalHeight };
 }
+
 
 app.post('/render', async (req, res) => {
   const { formulas } = req.body || {};
