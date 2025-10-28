@@ -1,4 +1,4 @@
-// server.js — high-resolution KaTeX renderer
+// server.js — improved high-resolution KaTeX renderer
 import express from "express";
 import cors from "cors";
 import bodyParser from "body-parser";
@@ -22,7 +22,7 @@ const tex = new TeX({ packages: AllPackages });
 const svg = new SVG({ fontCache: "none" });
 const mathDocument = mathjax.document("", { InputJax: tex, OutputJax: svg });
 
-// cache
+// Simple in-memory cache
 const cache = new Map();
 
 function forceWhite(svgStr) {
@@ -52,14 +52,23 @@ function findTightBBox(rawData, width, height, channels, alphaThreshold = 1) {
   return { left: minX, top: minY, width: (maxX - minX + 1), height: (maxY - minY + 1) };
 }
 
-// CORE endpoint: returns tiles + tight crop info; default scale set higher for high-res
+// Parse viewBox "minX minY width height" -> numbers, or null if absent
+function parseViewBox(viewBoxStr) {
+  if (!viewBoxStr) return null;
+  const parts = viewBoxStr.trim().split(/\s+|,/).map(Number).filter(n => !Number.isNaN(n));
+  if (parts.length >= 4) {
+    return { minX: parts[0], minY: parts[1], vbw: parts[2], vbh: parts[3] };
+  }
+  return null;
+}
+
 app.post("/renderRaw", async (req, res) => {
   try {
     const {
       latex,
       tileHeight = 128,
       fontSize = 48,
-      // scale controls raster DPI multiplier; increase for higher resolution
+      // scale controls how many pixels per SVG unit (higher = higher-res)
       scale = 4,
       margin = 2,
       scaleTo = false,
@@ -76,14 +85,28 @@ app.post("/renderRaw", async (req, res) => {
     const node = mathDocument.convert(latex, { display: true, em: fontSize });
     let innerSVG = adaptor.innerHTML(node);
     innerSVG = forceWhite(innerSVG);
-    const viewBox = adaptor.getAttribute(node, "viewBox") || null;
-    const svgWrap = viewBox
-      ? `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${viewBox}">${innerSVG}</svg>`
-      : `<svg xmlns="http://www.w3.org/2000/svg">${innerSVG}</svg>`;
 
-    // Rasterize at high density. PNG is lossless; quality comes from higher pixel dims.
-    const density = Math.max(1, 72 * (scale || 1));
-    const fullPngBuffer = await sharp(Buffer.from(svgWrap), { density }).png({ compressionLevel: 0, adaptiveFiltering: false }).toBuffer();
+    // Get viewBox from MathJax node (if present)
+    const rawViewBox = adaptor.getAttribute(node, "viewBox") || null;
+    const vb = parseViewBox(rawViewBox);
+
+    // If viewBox exists, use its width/height * scale as explicit pixel dimensions.
+    // This forces predictable high-resolution rasterization.
+    let svgWrap;
+    if (vb) {
+      const pixelW = Math.max(1, Math.round(vb.vbw * scale));
+      const pixelH = Math.max(1, Math.round(vb.vbh * scale));
+      // Add preserveAspectRatio to avoid unexpected stretching by downstream tools
+      svgWrap = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${vb.minX} ${vb.minY} ${vb.vbw} ${vb.vbh}" width="${pixelW}" height="${pixelH}" preserveAspectRatio="xMinYMin meet">${innerSVG}</svg>`;
+    } else {
+      // fallback: no viewBox — supply width/height from fontSize*scale
+      const fallbackSize = Math.max(1, Math.round(fontSize * scale));
+      svgWrap = `<svg xmlns="http://www.w3.org/2000/svg" width="${fallbackSize}" height="${fallbackSize}" preserveAspectRatio="xMinYMin meet">${innerSVG}</svg>`;
+    }
+
+    // Rasterize SVG to PNG using explicit pixel size
+    // Avoid relying solely on density — setting width/height in SVG ensures correct bitmap size.
+    const fullPngBuffer = await sharp(Buffer.from(svgWrap)).png({ compressionLevel: 0, adaptiveFiltering: false }).toBuffer();
 
     // get raw pixels for tight bbox
     const rawObj = await sharp(fullPngBuffer).raw().toBuffer({ resolveWithObject: true });
@@ -92,7 +115,7 @@ app.post("/renderRaw", async (req, res) => {
     const fullHeight = rawObj.info.height;
     const channels = rawObj.info.channels;
 
-    // tight bbox
+    // compute tight bbox (in pixel coordinates of full raster)
     let bbox = findTightBBox(rawData, fullWidth, fullHeight, channels, 1);
     if (!bbox) bbox = { left: 0, top: 0, width: fullWidth, height: fullHeight };
 
@@ -109,13 +132,12 @@ app.post("/renderRaw", async (req, res) => {
       .png({ compressionLevel: 0, adaptiveFiltering: false })
       .toBuffer();
 
-    // optionally resize (high-quality kernel) — use lanczos3 for best quality when scaling
+    // optionally resize (high-quality kernel)
     let finalBuffer = croppedBuffer;
     let finalWidth = bbox.width;
     let finalHeight = bbox.height;
 
     if (scaleTo) {
-      // If targetWidth & targetHeight both provided, use contain to preserve content
       if (targetWidth && targetHeight) {
         finalBuffer = await sharp(croppedBuffer)
           .resize(targetWidth, targetHeight, { fit: "contain", kernel: "lanczos3", background: { r: 0, g: 0, b: 0, alpha: 0 } })
@@ -175,13 +197,22 @@ app.post("/renderFull", async (req, res) => {
     const node = mathDocument.convert(latex, { display: true, em: fontSize });
     let innerSVG = adaptor.innerHTML(node);
     innerSVG = forceWhite(innerSVG);
-    const viewBox = adaptor.getAttribute(node, "viewBox") || null;
-    const svgWrap = viewBox ? `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${viewBox}">${innerSVG}</svg>` : `<svg xmlns="http://www.w3.org/2000/svg">${innerSVG}</svg>`;
+    const rawViewBox = adaptor.getAttribute(node, "viewBox") || null;
+    const vb = parseViewBox(rawViewBox);
 
-    const density = Math.max(1, 72 * (scale || 1));
-    let buf = await sharp(Buffer.from(svgWrap), { density }).png({ compressionLevel: 0, adaptiveFiltering: false }).toBuffer();
+    let svgWrap;
+    if (vb) {
+      const pixelW = Math.max(1, Math.round(vb.vbw * scale));
+      const pixelH = Math.max(1, Math.round(vb.vbh * scale));
+      svgWrap = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${vb.minX} ${vb.minY} ${vb.vbw} ${vb.vbh}" width="${pixelW}" height="${pixelH}" preserveAspectRatio="xMinYMin meet">${innerSVG}</svg>`;
+    } else {
+      const fallbackSize = Math.max(1, Math.round(fontSize * scale));
+      svgWrap = `<svg xmlns="http://www.w3.org/2000/svg" width="${fallbackSize}" height="${fallbackSize}" preserveAspectRatio="xMinYMin meet">${innerSVG}</svg>`;
+    }
 
-    // trim and optionally scale
+    let buf = await sharp(Buffer.from(svgWrap)).png({ compressionLevel: 0, adaptiveFiltering: false }).toBuffer();
+
+    // trim and optionally resize
     buf = await sharp(buf).trim().toBuffer();
     if (scaleTo && (targetWidth || targetHeight)) {
       buf = await sharp(buf)
