@@ -51,44 +51,57 @@ app.post("/renderRaw", async (req, res) => {
   try {
     const {
       latex,
-      scale = 6,
+      fontSize = 32,
+      scale = 4,
       margin = 2,
-      tileHeight = 128
+      tileHeight = 128,
+      scaleTo = false,
+      targetWidth,
+      targetHeight
     } = req.body;
 
     if (!latex) return res.status(400).json({ error: "Missing latex" });
 
-    const key = hashKey(latex, scale, margin, tileHeight);
+    const key = hashKey(latex, fontSize, scale, margin, tileHeight, targetWidth, targetHeight);
     if (cache.has(key)) return res.json(cache.get(key));
 
     // Step 1: Render LaTeX → SVG
     const node = mathDocument.convert(latex, { display: true });
     let svg = adaptor.innerHTML(node);
+    const viewBox = adaptor.getAttribute(node, "viewBox") || "0 0 100 100";
 
-    // Inject white fill + no background
-    const styledSVG = svg.replace(
-      /<svg([^>]*)>/,
-      `<svg$1><style>
-        * { fill: white !important; stroke: white !important; }
-      </style>`
-    );
+    // Step 2: Apply font scaling
+    const scaleFactor = fontSize / 32; // baseline 32px = normal size
+    const styledSVG = `
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="${viewBox}" style="background:none">
+        <style>
+          * { fill: white !important; stroke: white !important; }
+        </style>
+        <g transform="scale(${scaleFactor})">${svg}</g>
+      </svg>`;
 
-    const viewBox = adaptor.getAttribute(node, "viewBox");
-    const svgWrapped = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${viewBox}" style="background:none">${styledSVG}</svg>`;
-
-    // Step 2: Rasterize SVG → PNG @ high density
+    // Step 3: Rasterize SVG → PNG @ high density
     const density = 72 * scale;
-    let png = await sharp(Buffer.from(svgWrapped), { density })
-      .png({ compressionLevel: 0 })
-      .toBuffer();
+    let sharpImg = sharp(Buffer.from(styledSVG), { density }).png({ compressionLevel: 0 });
 
-    // Step 3: Find bounding box (tight crop)
+    // Step 4: Resize if client requested scaleTo
+    if (scaleTo && (targetHeight || targetWidth)) {
+      sharpImg = sharpImg.resize({
+        width: targetWidth ? Math.round(targetWidth * scale) : undefined,
+        height: targetHeight ? Math.round(targetHeight * scale) : undefined,
+        fit: "contain"
+      });
+    }
+
+    let png = await sharpImg.toBuffer();
+
+    // Step 5: Find bounding box (tight crop)
     const raw = await sharp(png).raw().toBuffer({ resolveWithObject: true });
     const bbox = findBBox(raw.data, raw.info.width, raw.info.height, raw.info.channels) || {
-      left: 0, top: 0, width: raw.info.width, height: raw.info.height,
+      left: 0, top: 0, width: raw.info.width, height: raw.info.height
     };
 
-    // Step 4: Crop to bounding box
+    // Step 6: Crop to bounding box
     const cropped = await sharp(png)
       .extract(bbox)
       .png({ compressionLevel: 0 })
@@ -98,7 +111,7 @@ app.post("/renderRaw", async (req, res) => {
     const finalW = meta.width;
     const finalH = meta.height;
 
-    // Step 5: Split into horizontal raw RGBA tiles
+    // Step 7: Split into tiles
     const fullRaw = await sharp(cropped).raw().toBuffer();
     const channels = 4;
     const tiles = [];
@@ -114,7 +127,7 @@ app.post("/renderRaw", async (req, res) => {
       height: finalH,
       channels,
       tileHeight,
-      crop: bbox,
+      crop: bbox
     };
 
     cache.set(key, payload);
@@ -124,8 +137,3 @@ app.post("/renderRaw", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () =>
-  console.log(`✅ White MathJax renderer running at http://localhost:${PORT}`)
-);
