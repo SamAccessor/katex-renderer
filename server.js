@@ -15,7 +15,7 @@ app.use(cors());
 
 const MAX_SIZE = 1024;
 
-// MathJax v3 setup
+// MathJax v3 setup (done once, not per request)
 const adaptor = liteAdaptor();
 RegisterHTMLHandler(adaptor);
 const tex = new TeX({ packages: ['base', 'ams'] });
@@ -43,7 +43,6 @@ function svgToWhite(svgString) {
 }
 
 app.post('/render', async (req, res) => {
-  const startTime = Date.now();
   const { formula } = req.body || {};
   if (!formula || typeof formula !== 'string') {
     return res.status(400).json({ error: 'Missing formula' });
@@ -76,18 +75,15 @@ app.post('/render', async (req, res) => {
 
     // 5. Return base64 RGBA + size
     const base64 = Buffer.from(rgbaBuffer).toString('base64');
-    const elapsed = Date.now() - startTime;
-    res.set('X-Render-Time-ms', elapsed);
-    return res.json({
+    res.json({
       width: info.width,
       height: info.height,
       channels: info.channels,
-      rgbaBase64: base64,
-      renderTimeMs: elapsed
+      rgbaBase64: base64
     });
   } catch (err) {
     console.error('Render error:', err);
-    return res.status(500).json({ error: String(err) });
+    res.status(500).json({ error: 'Render failed: ' + err.message });
   }
 });
 
