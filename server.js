@@ -3,11 +3,11 @@ import express from 'express';
 import bodyParser from 'body-parser';
 import cors from 'cors';
 import sharp from 'sharp';
-import { mathjax } from 'mathjax';
-import { TeX } from 'mathjax/input/tex.js';
-import { SVG } from 'mathjax/output/svg.js';
-import { liteAdaptor } from 'mathjax/adaptors/liteAdaptor.js';
-import { RegisterHTMLHandler } from 'mathjax/handlers/html.js';
+import { mathjax } from 'mathjax-full/js/mathjax.js';
+import { TeX } from 'mathjax-full/js/input/tex.js';
+import { SVG } from 'mathjax-full/js/output/svg.js';
+import { liteAdaptor } from 'mathjax-full/js/adaptors/liteAdaptor.js';
+import { RegisterHTMLHandler } from 'mathjax-full/js/handlers/html.js';
 
 const app = express();
 app.use(bodyParser.json({ limit: '1mb' }));
