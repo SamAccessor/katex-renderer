@@ -15,6 +15,7 @@ app.use(cors());
 
 const MAX_SIZE = 1024;
 
+// MathJax setup
 const adaptor = liteAdaptor();
 RegisterHTMLHandler(adaptor);
 const tex = new TeX({ packages: ['base', 'ams'] });
@@ -40,7 +41,17 @@ function svgToWhite(svgString) {
     .replace(/fill="#000000"/g, 'fill="#ffffff"');
 }
 
-// Render multiple formulas stacked vertically
+// --- FIX: Define preprocessFormula ---
+function preprocessFormula(formula) {
+  // If it looks like plain text (no LaTeX math symbols), wrap in \text{...}
+  // You can adjust this heuristic as needed.
+  if (!/[\\^_{}]/.test(formula)) {
+    return `\\text{${formula}}`;
+  }
+  return formula;
+}
+
+// --- FIX: Use preprocessFormula in renderStackedSVG ---
 function renderStackedSVG(formulas) {
   let y = 0;
   let svgParts = [];
@@ -81,7 +92,6 @@ function renderStackedSVG(formulas) {
   return { svg: stackedSVG, width: maxWidth, height: totalHeight };
 }
 
-
 app.post('/render', async (req, res) => {
   const { formulas } = req.body || {};
   if (!formulas || !Array.isArray(formulas) || formulas.length === 0) {
@@ -120,3 +130,4 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`MathJax v3 renderer (white text, high-res, stacked) listening on port ${PORT}`);
 });
+
