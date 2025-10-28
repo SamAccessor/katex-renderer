@@ -34,6 +34,15 @@ function getSVGDimensions(svgString) {
   return { width: 256, height: 128 };
 }
 
+// Utility: Replace all fill colors in SVG with white
+function svgToWhite(svgString) {
+  // Replace common black fills with white
+  return svgString
+    .replace(/fill="black"/g, 'fill="white"')
+    .replace(/fill="#000"/g, 'fill="#fff"')
+    .replace(/fill="#000000"/g, 'fill="#ffffff"');
+}
+
 app.post('/render', async (req, res) => {
   const startTime = Date.now();
   const { formula } = req.body || {};
@@ -44,9 +53,12 @@ app.post('/render', async (req, res) => {
   try {
     // 1. Render TeX to SVG using MathJax v3
     const node = mj.convert(formula, { display: true });
-    const svgString = adaptor.outerHTML(node);
+    let svgString = adaptor.outerHTML(node);
 
-    // 2. Compute size, clamp to 1024x1024
+    // 2. Convert all fills to white
+    svgString = svgToWhite(svgString);
+
+    // 3. Compute size, clamp to 1024x1024
     const size = getSVGDimensions(svgString);
     let targetW = size.width;
     let targetH = size.height;
@@ -54,7 +66,7 @@ app.post('/render', async (req, res) => {
     targetW = Math.max(1, Math.floor(targetW * scale));
     targetH = Math.max(1, Math.floor(targetH * scale));
 
-    // 3. Rasterize SVG to RGBA (fast, in-memory)
+    // 4. Rasterize SVG to RGBA (fast, in-memory)
     const { data: rgbaBuffer, info } = await sharp(Buffer.from(svgString))
       .resize(targetW, targetH, {
         fit: 'contain',
@@ -63,7 +75,7 @@ app.post('/render', async (req, res) => {
       .raw()
       .toBuffer({ resolveWithObject: true });
 
-    // 4. Return base64 RGBA + size
+    // 5. Return base64 RGBA + size
     const base64 = Buffer.from(rgbaBuffer).toString('base64');
     const elapsed = Date.now() - startTime;
     res.set('X-Render-Time-ms', elapsed);
@@ -81,5 +93,5 @@ app.post('/render', async (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`MathJax v3 renderer listening on port ${PORT}`);
+  console.log(`MathJax v3 renderer (white text) listening on port ${PORT}`);
 });
