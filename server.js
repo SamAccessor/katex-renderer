@@ -51,18 +51,25 @@ function findBBox(data, width, height, channels, alphaThreshold = 1) {
 // 🔹 Render route
 app.post("/renderRaw", async (req, res) => {
   try {
-    const { latex, scale = 6, margin = 2, tileHeight = 128 } = req.body;
+    const {
+      latex,
+      scale = 6,
+      margin = 2,
+      tileHeight = 128,
+      display = false, // false = inline, true = block
+    } = req.body;
+
     if (!latex || typeof latex !== "string") {
       return res.status(400).json({ error: "Missing or invalid 'latex' input" });
     }
 
-    const key = hashKey(latex, scale, margin, tileHeight);
+    const key = hashKey(latex, scale, margin, tileHeight, display);
     if (cache.has(key)) return res.json(cache.get(key));
 
     // Step 1: Render LaTeX → SVG
     let node;
     try {
-      node = mathDocument.convert(latex, { display: true });
+      node = mathDocument.convert(latex, { display });
     } catch (mjErr) {
       console.error("❌ MathJax parse error:", mjErr);
       return res.status(400).json({ error: "MathJax parse error", details: mjErr.message });
@@ -73,11 +80,22 @@ app.post("/renderRaw", async (req, res) => {
     }
 
     let svgInner = adaptor.innerHTML(node);
-    const viewBox = adaptor.getAttribute(node, "viewBox") || "0 0 128 64";
+    let viewBox = adaptor.getAttribute(node, "viewBox");
+
+    // Expand viewBox dynamically to avoid cutoff
+    let expandedViewBox = "0 0 2048 512"; // default large area
+    if (viewBox) {
+      const parts = viewBox.split(" ").map(Number);
+      if (parts.length === 4 && parts.every((n) => !isNaN(n))) {
+        parts[2] *= 1.5; // widen width by 50%
+        parts[3] *= 1.5; // height safety
+        expandedViewBox = parts.join(" ");
+      }
+    }
 
     // Step 2: Inject white fill + transparent background
     const svgWrapped = `
-      <svg xmlns="http://www.w3.org/2000/svg" viewBox="${viewBox}" style="background:none">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="${expandedViewBox}" style="background:none; overflow:visible">
         <style>* { fill: white !important; stroke: white !important; }</style>
         ${svgInner}
       </svg>
