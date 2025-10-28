@@ -13,9 +13,9 @@ const app = express();
 app.use(bodyParser.json({ limit: '1mb' }));
 app.use(cors());
 
-const MAX_SIZE = 1024;
+const MAX_SIZE = 1024; // Roblox EditableImage max
 
-// MathJax v3 setup (done once, not per request)
+// MathJax setup (once per server)
 const adaptor = liteAdaptor();
 RegisterHTMLHandler(adaptor);
 const tex = new TeX({ packages: ['base', 'ams'] });
@@ -56,7 +56,7 @@ app.post('/render', async (req, res) => {
     // 2. Convert all fills to white
     svgString = svgToWhite(svgString);
 
-    // 3. Compute size, clamp to 1024x1024
+    // 3. Compute size, clamp to 1024x1024, preserve aspect ratio
     const size = getSVGDimensions(svgString);
     let targetW = size.width;
     let targetH = size.height;
@@ -64,11 +64,12 @@ app.post('/render', async (req, res) => {
     targetW = Math.max(1, Math.floor(targetW * scale));
     targetH = Math.max(1, Math.floor(targetH * scale));
 
-    // 4. Rasterize SVG to RGBA (fast, in-memory)
+    // 4. Rasterize SVG to RGBA (high quality, in-memory)
     const { data: rgbaBuffer, info } = await sharp(Buffer.from(svgString))
       .resize(targetW, targetH, {
         fit: 'contain',
         background: { r: 0, g: 0, b: 0, alpha: 0 },
+        kernel: sharp.kernel.lanczos3 // best quality
       })
       .raw()
       .toBuffer({ resolveWithObject: true });
@@ -89,5 +90,5 @@ app.post('/render', async (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`MathJax v3 renderer (white text) listening on port ${PORT}`);
+  console.log(`MathJax v3 renderer (white text, high-res) listening on port ${PORT}`);
 });
