@@ -1,3 +1,4 @@
+// server.js
 import express from 'express';
 import bodyParser from 'body-parser';
 import cors from 'cors';
@@ -16,12 +17,14 @@ app.use(cors());
 const MAX_SIZE = 1024;
 const EX_TO_PX = 8;
 
+// MathJax setup
 const adaptor = liteAdaptor();
 RegisterHTMLHandler(adaptor);
 const tex = new TeX({ packages: ['base', 'ams'] });
 const svg = new SVG({ fontCache: 'none' });
 const doc = mathjax.document('', { InputJax: tex, OutputJax: svg });
 
+// Extract pixel width/height from MathJax SVG’s ex-based attributes
 function getSVGPixelDims(svgString) {
   const wMatch = svgString.match(/width="([\d.]+)ex"/);
   const hMatch = svgString.match(/height="([\d.]+)ex"/);
@@ -33,6 +36,7 @@ function getSVGPixelDims(svgString) {
   return { width: 256, height: 128 };
 }
 
+// Force all fills to white
 function forceWhite(svgString) {
   return svgString
     .replace(/fill="black"/g, 'fill="white"')
@@ -40,22 +44,26 @@ function forceWhite(svgString) {
     .replace(/fill="#000000"/g, 'fill="#ffffff"');
 }
 
+// Render a single formula to an SVG fragment + measured size
 function renderFormulaToSVG(formula) {
   // DO NOT WRAP with $$...$$!
   const node = doc.convert(formula, { display: true });
   let svg = adaptor.outerHTML(node);
 
   if (!svg || !svg.trim().startsWith('<svg')) {
+    // Fallback minimal SVG with text to avoid pipeline break
     const safeText = (formula || '').replace(/[<>]/g, '');
     svg = `<svg xmlns="http://www.w3.org/2000/svg" width="40ex" height="3ex"><text x="0" y="20" fill="white" font-size="16" font-family="Arial">${safeText}</text></svg>`;
   }
 
   svg = forceWhite(svg);
   const dims = getSVGPixelDims(svg);
+  // Strip outer <svg> tags so we can compose later
   const inner = svg.replace(/^<svg[^>]*>/, '').replace(/<\/svg>$/, '');
   return { inner, width: dims.width, height: dims.height };
 }
 
+// Compose multiple formula SVG fragments stacked vertically into one SVG
 function composeStackedSVG(frags) {
   let y = 0;
   let maxW = 1;
@@ -78,6 +86,7 @@ ${rows.join('\n')}
   return { svg, width: canvasW, height: canvasH };
 }
 
+// Rasterize SVG -> raw RGBA buffer using Sharp, keep transparency
 async function svgToRGBA(svgString, targetW, targetH) {
   const { data, info } = await sharp(Buffer.from(svgString))
     .resize(targetW, targetH, {
@@ -90,6 +99,7 @@ async function svgToRGBA(svgString, targetW, targetH) {
   return { data, info };
 }
 
+// POST /render
 app.post('/render', async (req, res) => {
   try {
     let formulas = req.body.formulas;
