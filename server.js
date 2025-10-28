@@ -13,9 +13,8 @@ const app = express();
 app.use(bodyParser.json({ limit: '1mb' }));
 app.use(cors());
 
-const MAX_SIZE = 1024; // Roblox EditableImage max
+const MAX_SIZE = 1024;
 
-// MathJax setup (once per server)
 const adaptor = liteAdaptor();
 RegisterHTMLHandler(adaptor);
 const tex = new TeX({ packages: ['base', 'ams'] });
@@ -34,7 +33,6 @@ function getSVGDimensions(svgString) {
   return { width: 256, height: 128 };
 }
 
-// Utility: Replace all fill colors in SVG with white
 function svgToWhite(svgString) {
   return svgString
     .replace(/fill="black"/g, 'fill="white"')
@@ -42,39 +40,67 @@ function svgToWhite(svgString) {
     .replace(/fill="#000000"/g, 'fill="#ffffff"');
 }
 
+// Render multiple formulas stacked vertically
+function renderStackedSVG(formulas) {
+  let y = 0;
+  let svgParts = [];
+  let maxWidth = 0;
+  let totalHeight = 0;
+
+  for (const formula of formulas) {
+    const node = mj.convert(formula, { display: true });
+    let svgString = adaptor.outerHTML(node);
+    svgString = svgToWhite(svgString);
+
+    if (!svgString.trim().startsWith('<svg')) {
+      throw new Error('MathJax did not produce a valid SVG for formula: ' + formula);
+    }
+
+    const { width, height } = getSVGDimensions(svgString);
+
+    // Remove outer <svg> and get inner content
+    const inner = svgString.replace(/^<svg[^>]*>|<\/svg>$/g, '');
+
+    svgParts.push(`<g transform="translate(0,${y})">${inner}</g>`);
+    y += height + 10; // 10px spacing
+    maxWidth = Math.max(maxWidth, width);
+    totalHeight += height + 10;
+  }
+
+  // Clamp to MAX_SIZE
+  maxWidth = Math.min(maxWidth, MAX_SIZE);
+  totalHeight = Math.min(totalHeight, MAX_SIZE);
+
+  // Compose final SVG
+  const stackedSVG = `
+    <svg xmlns="http://www.w3.org/2000/svg" width="${maxWidth}" height="${totalHeight}">
+      ${svgParts.join('\n')}
+    </svg>
+  `;
+  return { svg: stackedSVG, width: maxWidth, height: totalHeight };
+}
+
 app.post('/render', async (req, res) => {
-  const { formula } = req.body || {};
-  if (!formula || typeof formula !== 'string') {
-    return res.status(400).json({ error: 'Missing formula' });
+  const { formulas } = req.body || {};
+  if (!formulas || !Array.isArray(formulas) || formulas.length === 0) {
+    return res.status(400).json({ error: 'Missing formulas array' });
   }
 
   try {
-    // 1. Render TeX to SVG using MathJax v3
-    const node = mj.convert(formula, { display: true });
-    let svgString = adaptor.outerHTML(node);
+    // 1. Render stacked SVG
+    const { svg, width, height } = renderStackedSVG(formulas);
 
-    // 2. Convert all fills to white
-    svgString = svgToWhite(svgString);
-
-    // 3. Compute size, clamp to 1024x1024, preserve aspect ratio
-    const size = getSVGDimensions(svgString);
-    let targetW = size.width;
-    let targetH = size.height;
-    const scale = Math.min(MAX_SIZE / targetW, MAX_SIZE / targetH, 1);
-    targetW = Math.max(1, Math.floor(targetW * scale));
-    targetH = Math.max(1, Math.floor(targetH * scale));
-
-    // 4. Rasterize SVG to RGBA (high quality, in-memory)
-    const { data: rgbaBuffer, info } = await sharp(Buffer.from(svgString))
-      .resize(targetW, targetH, {
+    // 2. Rasterize SVG to RGBA (high quality)
+    const { data: rgbaBuffer, info } = await sharp(Buffer.from(svg))
+      .resize(width, height, {
         fit: 'contain',
         background: { r: 0, g: 0, b: 0, alpha: 0 },
-        kernel: sharp.kernel.lanczos3 // best quality
+        kernel: sharp.kernel.lanczos3
       })
       .raw()
       .toBuffer({ resolveWithObject: true });
 
-    // 5. Return base64 RGBA + size
+    // 3. Return base64 RGBA + size
     const base64 = Buffer.from(rgbaBuffer).toString('base64');
     res.json({
       width: info.width,
@@ -90,5 +116,5 @@ app.post('/render', async (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`MathJax v3 renderer (white text, high-res) listening on port ${PORT}`);
+  console.log(`MathJax v3 renderer (white text, high-res, stacked) listening on port ${PORT}`);
 });
