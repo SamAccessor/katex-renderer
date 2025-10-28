@@ -3,6 +3,7 @@ import cors from "cors";
 import bodyParser from "body-parser";
 import sharp from "sharp";
 import crypto from "crypto";
+
 import { mathjax } from "mathjax-full/js/mathjax.js";
 import { TeX } from "mathjax-full/js/input/tex.js";
 import { SVG } from "mathjax-full/js/output/svg.js";
@@ -14,20 +15,21 @@ const app = express();
 app.use(cors());
 app.use(bodyParser.json({ limit: "50mb" }));
 
-// Setup MathJax
+// 🔹 Setup MathJax
 const adaptor = liteAdaptor();
 RegisterHTMLHandler(adaptor);
+
 const tex = new TeX({ packages: AllPackages });
 const svg = new SVG({ fontCache: "none" });
 const mathDocument = mathjax.document("", { InputJax: tex, OutputJax: svg });
 
-// Cache for repeated renders
+// 🔹 Cache for repeated renders
 const cache = new Map();
-
 function hashKey(...parts) {
   return crypto.createHash("md5").update(parts.join(":")).digest("hex");
 }
 
+// 🔹 Bounding-box finder (tight crop)
 function findBBox(data, width, height, channels, alphaThreshold = 1) {
   let minX = width, minY = height, maxX = -1, maxY = -1;
   for (let y = 0; y < height; y++) {
@@ -46,42 +48,88 @@ function findBBox(data, width, height, channels, alphaThreshold = 1) {
   return { left: minX, top: minY, width: maxX - minX + 1, height: maxY - minY + 1 };
 }
 
+// 🔹 Render route
 app.post("/renderRaw", async (req, res) => {
   try {
     const { latex, scale = 6, margin = 2, tileHeight = 128 } = req.body;
-
-    if (!latex || typeof latex !== "string" || latex.trim() === "") {
-      return res.status(400).json({ error: "Missing or invalid LaTeX" });
+    if (!latex || typeof latex !== "string") {
+      return res.status(400).json({ error: "Missing or invalid 'latex' input" });
     }
 
-    // ✅ sanity check first
-    if (!latex.match(/[a-zA-Z0-9\\]/)) {
-      throw new Error("Invalid or empty LaTeX string");
-    }
+    const key = hashKey(latex, scale, margin, tileHeight);
+    if (cache.has(key)) return res.json(cache.get(key));
 
+    // Step 1: Render LaTeX → SVG
     let node;
     try {
       node = mathDocument.convert(latex, { display: true });
-    } catch (mjError) {
-      console.error("❌ MathJax parse error:", mjError);
-      return res.status(400).json({
-        error: "MathJax parse error",
-        details: mjError.message || mjError.toString(),
-      });
+    } catch (mjErr) {
+      console.error("❌ MathJax parse error:", mjErr);
+      return res.status(400).json({ error: "MathJax parse error", details: mjErr.message });
     }
 
-    if (!node) throw new Error("MathJax conversion returned null node.");
+    if (!node) {
+      throw new Error("MathJax conversion returned null node.");
+    }
 
-    const inner = adaptor.innerHTML(node);
+    let svgInner = adaptor.innerHTML(node);
     const viewBox = adaptor.getAttribute(node, "viewBox") || "0 0 128 64";
+
+    // Step 2: Inject white fill + transparent background
     const svgWrapped = `
-      <svg xmlns="http://www.w3.org/2000/svg" viewBox="${viewBox}">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="${viewBox}" style="background:none">
         <style>* { fill: white !important; stroke: white !important; }</style>
-        ${inner}
+        ${svgInner}
       </svg>
     `;
 
-    // ... (keep same sharp cropping & tiling logic from the previous version)
+    // Step 3: Rasterize SVG → PNG at high density
+    const density = 72 * scale;
+    const png = await sharp(Buffer.from(svgWrapped), { density })
+      .png({ compressionLevel: 0 })
+      .toBuffer();
+
+    // Step 4: Find tight bounding box (auto-crop)
+    const raw = await sharp(png).raw().toBuffer({ resolveWithObject: true });
+    const bbox =
+      findBBox(raw.data, raw.info.width, raw.info.height, raw.info.channels) || {
+        left: 0,
+        top: 0,
+        width: raw.info.width,
+        height: raw.info.height,
+      };
+
+    // Step 5: Crop
+    const cropped = await sharp(png)
+      .extract(bbox)
+      .png({ compressionLevel: 0 })
+      .toBuffer();
+
+    const meta = await sharp(cropped).metadata();
+    const finalW = meta.width;
+    const finalH = meta.height;
+
+    // Step 6: Split into RGBA base64 tiles
+    const fullRaw = await sharp(cropped).raw().toBuffer();
+    const channels = 4;
+    const tiles = [];
+    for (let y = 0; y < finalH; y += tileHeight) {
+      const rows = Math.min(tileHeight, finalH - y);
+      const slice = fullRaw.subarray(y * finalW * channels, (y + rows) * finalW * channels);
+      tiles.push(Buffer.from(slice).toString("base64"));
+    }
+
+    const payload = {
+      tiles,
+      width: finalW,
+      height: finalH,
+      channels,
+      tileHeight,
+      crop: bbox,
+    };
+
+    cache.set(key, payload);
+    res.json(payload);
   } catch (err) {
     console.error("[renderRaw] ERROR:", err);
     res.status(500).json({ error: err.message });
@@ -90,5 +138,5 @@ app.post("/renderRaw", async (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () =>
-  console.log(`✅ White MathJax renderer running safely at http://localhost:${PORT}`)
+  console.log(`✅ White MathJax renderer running at http://localhost:${PORT}`)
 );
