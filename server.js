@@ -41,17 +41,24 @@ function svgToWhite(svgString) {
     .replace(/fill="#000000"/g, 'fill="#ffffff"');
 }
 
-// --- FIX: Define preprocessFormula ---
+// Wrap plain text in \text{...}, escape LaTeX special chars
 function preprocessFormula(formula) {
-  // If it looks like plain text (no LaTeX math symbols), wrap in \text{...}
-  // You can adjust this heuristic as needed.
   if (!/[\\^_{}]/.test(formula)) {
-    return `\\text{${formula}}`;
+    const safeText = formula.replace(/([\\{}])/g, '\\$1');
+    return `\\text{${safeText}}`;
   }
   return formula;
 }
 
-// --- FIX: Use preprocessFormula in renderStackedSVG ---
+// Fallback SVG for plain text if MathJax fails
+function fallbackSVG(text, width = 256, height = 64) {
+  return `
+    <svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">
+      <text x="10" y="${height/2}" fill="white" font-size="32" font-family="Arial, sans-serif">${text}</text>
+    </svg>
+  `;
+}
+
 function renderStackedSVG(formulas) {
   let y = 0;
   let svgParts = [];
@@ -60,12 +67,17 @@ function renderStackedSVG(formulas) {
 
   for (const formulaRaw of formulas) {
     const formula = preprocessFormula(formulaRaw);
-    const node = mj.convert(formula, { display: true });
-    let svgString = adaptor.outerHTML(node);
-    svgString = svgToWhite(svgString);
+    let node, svgString;
+    try {
+      node = mj.convert(formula, { display: true });
+      svgString = adaptor.outerHTML(node);
+      svgString = svgToWhite(svgString);
+    } catch (err) {
+      svgString = fallbackSVG(formulaRaw);
+    }
 
     if (!svgString.trim().startsWith('<svg')) {
-      throw new Error('MathJax did not produce a valid SVG for formula: ' + formulaRaw);
+      svgString = fallbackSVG(formulaRaw);
     }
 
     const { width, height } = getSVGDimensions(svgString);
@@ -93,9 +105,17 @@ function renderStackedSVG(formulas) {
 }
 
 app.post('/render', async (req, res) => {
-  const { formulas } = req.body || {};
-  if (!formulas || !Array.isArray(formulas) || formulas.length === 0) {
-    return res.status(400).json({ error: 'Missing formulas array' });
+  let formulas = req.body.formulas;
+  if (!formulas) {
+    // Support single formula as string
+    if (typeof req.body.formula === 'string') {
+      formulas = [req.body.formula];
+    } else {
+      return res.status(400).json({ error: 'Missing formulas array or formula string' });
+    }
+  }
+  if (!Array.isArray(formulas) || formulas.length === 0) {
+    return res.status(400).json({ error: 'Formulas must be a non-empty array' });
   }
 
   try {
