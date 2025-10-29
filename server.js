@@ -24,7 +24,6 @@ const GAP = 2; // minimal vertical gap in px
 
 // Helper: get tight pixel bbox for a single SVG
 async function getTightSVG(svgString, scale) {
-  // Rasterize to PNG, get alpha channel, crop to non-transparent
   const density = 72 * scale;
   const pngBuffer = await sharp(Buffer.from(svgString), { density })
     .png()
@@ -45,7 +44,6 @@ async function getTightSVG(svgString, scale) {
     }
   }
   if (maxX < minX || maxY < minY) {
-    // fallback: use full image
     minX = 0; minY = 0; maxX = info.width - 1; maxY = info.height - 1;
   }
   const width = maxX - minX + 1;
@@ -98,11 +96,15 @@ app.post("/render", async (req, res) => {
     }
     totalHeight -= GAP; // remove last gap
 
+    // Clamp to MAX_SIZE
+    const finalWidth = Math.min(maxWidth, MAX_SIZE);
+    const finalHeight = Math.min(totalHeight, MAX_SIZE);
+
     // Compose final image by stacking PNGs vertically
     let composite = sharp({
       create: {
-        width: Math.min(maxWidth, MAX_SIZE),
-        height: Math.min(totalHeight, MAX_SIZE),
+        width: finalWidth,
+        height: finalHeight,
         channels: 4,
         background: { r: 0, g: 0, b: 0, alpha: 0 }
       }
@@ -113,7 +115,7 @@ app.post("/render", async (req, res) => {
       composites.push({
         input: row.png,
         top: y,
-        left: Math.floor((maxWidth - row.width) / 2)
+        left: Math.floor((finalWidth - row.width) / 2)
       });
       y += row.height + GAP;
     }
@@ -140,3 +142,4 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () =>
   console.log(`✅ MathJax renderer running at http://localhost:${PORT}`)
 );
+
