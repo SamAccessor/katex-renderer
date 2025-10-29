@@ -11,7 +11,7 @@ import { AllPackages } from "mathjax-full/js/input/tex/AllPackages.js";
 
 const app = express();
 app.use(cors());
-app.use(bodyParser.json({ limit: "10mb" }));
+app.use(bodyParser.json({ limit: "2mb" }));
 
 // MathJax setup
 const adaptor = liteAdaptor();
@@ -20,29 +20,11 @@ const tex = new TeX({ packages: AllPackages });
 const svg = new SVG({ fontCache: "none" });
 const mathDocument = mathjax.document("", { InputJax: tex, OutputJax: svg });
 
-function findBBox(data, width, height, channels, alphaThreshold = 1) {
-  let minX = width, minY = height, maxX = -1, maxY = -1;
-  for (let y = 0; y < height; y++) {
-    const row = y * width * channels;
-    for (let x = 0; x < width; x++) {
-      const alpha = data[row + x * channels + 3];
-      if (alpha > alphaThreshold) {
-        if (x < minX) minX = x;
-        if (x > maxX) maxX = x;
-        if (y < minY) minY = y;
-        if (y > maxY) maxY = y;
-      }
-    }
-  }
-  if (maxX < minX || maxY < minY) return null;
-  return { left: minX, top: minY, width: maxX - minX + 1, height: maxY - minY + 1 };
-}
-
 app.post("/render", async (req, res) => {
   try {
     const {
       formulas,
-      scale = 6,
+      scale = 3, // Lower default scale for less memory
       margin = 2
     } = req.body;
 
@@ -60,11 +42,9 @@ app.post("/render", async (req, res) => {
     const svgRows = [];
     let totalHeight = 0, maxWidth = 0;
     for (const latex of formulaList) {
-      // DO NOT WRAP with $$...$$!
       const node = mathDocument.convert(latex, { display: true });
       const inner = adaptor.innerHTML(node);
       const viewBox = adaptor.getAttribute(node, "viewBox") || "0 0 128 64";
-      // Wrap each formula in its own SVG for measurement
       const svgWrapped = `
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="${viewBox}">
           <style>
@@ -73,7 +53,7 @@ app.post("/render", async (req, res) => {
           ${inner}
         </svg>
       `;
-      // Measure with sharp
+      // Only get metadata, do not rasterize yet
       const meta = await sharp(Buffer.from(svgWrapped), { density: 72 * scale }).metadata();
       svgRows.push({ svg: svgWrapped, width: meta.width, height: meta.height });
       totalHeight += meta.height + margin * scale;
@@ -95,36 +75,21 @@ app.post("/render", async (req, res) => {
       </svg>
     `;
 
-    // Rasterize, crop, and output a single RGBA buffer
+    // Rasterize to raw RGBA (transparent background)
     const density = 72 * scale;
-    const padded = await sharp(Buffer.from(stackedSVG), { density })
-      .png({ compressionLevel: 0 })
-      .toBuffer();
+    const rawResult = await sharp(Buffer.from(stackedSVG), { density })
+      .resize({ width: Math.min(maxWidth, 1024), height: Math.min(totalHeight, 1024), fit: "contain", background: { r: 0, g: 0, b: 0, alpha: 0 } })
+      .raw()
+      .toBuffer({ resolveWithObject: true });
 
-    const rawResult = await sharp(padded).raw().toBuffer({ resolveWithObject: true });
     const { data, info } = rawResult;
-    const bbox = findBBox(data, info.width, info.height, info.channels) || {
-      left: 0, top: 0, width: info.width, height: info.height
-    };
-
-    const cropped = await sharp(padded)
-      .extract(bbox)
-      .png({ compressionLevel: 0 })
-      .toBuffer();
-
-    const meta = await sharp(cropped).metadata();
-    const finalW = meta.width;
-    const finalH = meta.height;
-    const channels = 4;
-
-    // Get raw RGBA buffer for Roblox
-    const fullRaw = await sharp(cropped).raw().toBuffer();
-    const base64 = Buffer.from(fullRaw).toString("base64");
+    // No extra cropping or tiling, just send the buffer
+    const base64 = Buffer.from(data).toString("base64");
 
     res.json({
-      width: finalW,
-      height: finalH,
-      channels,
+      width: info.width,
+      height: info.height,
+      channels: info.channels,
       rgbaBase64: base64
     });
 
