@@ -19,7 +19,7 @@ const tex = new TeX({ packages: AllPackages });
 const svg = new SVG({ fontCache: "none" });
 const mathDocument = mathjax.document("", { InputJax: tex, OutputJax: svg });
 
-const TILE_SIZE = 1024;
+const TILE_HEIGHT = 1024;
 const GAP = 1;
 
 function isLikelyPlainText(str) {
@@ -129,14 +129,14 @@ app.post("/render", async (req, res) => {
     }
     composite = composite.composite(composites);
 
-    // Output as tiles (horizontal slices, TILE_SIZE rows per tile)
+    // Output as vertical tiles (TILE_HEIGHT rows per tile)
     const { data, info } = await composite.raw().toBuffer({ resolveWithObject: true });
     const tiles = [];
     const channels = info.channels;
     const width = info.width;
     const height = info.height;
-    for (let y = 0; y < height; y += TILE_SIZE) {
-      const rows = Math.min(TILE_SIZE, height - y);
+    for (let y = 0; y < height; y += TILE_HEIGHT) {
+      const rows = Math.min(TILE_HEIGHT, height - y);
       const slice = data.subarray(y * width * channels, (y + rows) * width * channels);
       tiles.push(Buffer.from(slice).toString("base64"));
     }
@@ -145,7 +145,7 @@ app.post("/render", async (req, res) => {
       width,
       height,
       channels,
-      tileHeight: TILE_SIZE,
+      tileHeight: TILE_HEIGHT,
       tiles
     });
 
