@@ -22,6 +22,11 @@ const mathDocument = mathjax.document("", { InputJax: tex, OutputJax: svg });
 const MAX_SIZE = 1024;
 const GAP = 1; // minimal vertical gap in px
 
+function isPlainText(str) {
+  // Heuristic: treat as plain text if no math symbols
+  return !/[\\^_{}]|\\frac|\\sum|\\sqrt|\\int/.test(str);
+}
+
 async function getTightSVG(svgString, scale) {
   const density = 72 * scale;
   const pngBuffer = await sharp(Buffer.from(svgString), { density })
@@ -71,21 +76,39 @@ app.post("/render", async (req, res) => {
       return res.status(400).json({ error: "Missing or invalid LaTeX input" });
     }
 
-    // Render and crop each formula, record width/height
+    // Render and crop each formula or text
     const rows = [];
     let totalHeight = 0, maxWidth = 0;
     for (const latex of formulaList) {
-      const node = mathDocument.convert(latex, { display: true });
-      const inner = adaptor.innerHTML(node);
-      const viewBox = adaptor.getAttribute(node, "viewBox") || "0 0 128 64";
-      const svgWrapped = `
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="${viewBox}">
-          <style>
-            * { fill: white !important; stroke: white !important; }
-          </style>
-          ${inner}
-        </svg>
-      `;
+      let svgWrapped;
+      if (isPlainText(latex)) {
+        // Render as SVG text, not math
+        const fontSize = 32 * scale;
+        const safeText = latex.replace(/[<>&]/g, "");
+        // Estimate width: 0.6em per char (rough, but works for monospace/cursive)
+        const estWidth = Math.max(1, Math.floor(safeText.length * fontSize * 0.6));
+        svgWrapped = `
+          <svg xmlns="http://www.w3.org/2000/svg" width="${estWidth}" height="${fontSize + 8}">
+            <style>
+              text { fill: white; font-size: ${fontSize}px; font-family: 'Cursive', 'Arial', sans-serif; }
+            </style>
+            <text x="0" y="${fontSize}" fill="white">${safeText}</text>
+          </svg>
+        `;
+      } else {
+        // Render as math
+        const node = mathDocument.convert(latex, { display: true });
+        const inner = adaptor.innerHTML(node);
+        const viewBox = adaptor.getAttribute(node, "viewBox") || "0 0 128 64";
+        svgWrapped = `
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="${viewBox}">
+            <style>
+              * { fill: white !important; stroke: white !important; }
+            </style>
+            ${inner}
+          </svg>
+        `;
+      }
       const { png, width, height } = await getTightSVG(svgWrapped, scale);
       rows.push({ png, width, height });
       totalHeight += height + GAP;
