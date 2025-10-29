@@ -20,7 +20,7 @@ const svg = new SVG({ fontCache: "none" });
 const mathDocument = mathjax.document("", { InputJax: tex, OutputJax: svg });
 
 const MAX_SIZE = 1024;
-const GAP = 2; // minimal vertical gap in px
+const GAP = 1; // minimal vertical gap in px
 
 // Helper: get tight pixel bbox for a single SVG
 async function getTightSVG(svgString, scale) {
@@ -100,7 +100,7 @@ app.post("/render", async (req, res) => {
     const finalWidth = Math.min(maxWidth, MAX_SIZE);
     const finalHeight = Math.min(totalHeight, MAX_SIZE);
 
-    // Compose final image by stacking PNGs vertically
+    // Compose final image by stacking PNGs vertically, centered
     let composite = sharp({
       create: {
         width: finalWidth,
@@ -142,4 +142,3 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () =>
   console.log(`✅ MathJax renderer running at http://localhost:${PORT}`)
 );
-
