@@ -11,7 +11,7 @@ import { AllPackages } from "mathjax-full/js/input/tex/AllPackages.js";
 
 const app = express();
 app.use(cors());
-app.use(bodyParser.json({ limit: "2mb" }));
+app.use(bodyParser.json({ limit: "4mb" }));
 
 const adaptor = liteAdaptor();
 RegisterHTMLHandler(adaptor);
@@ -19,8 +19,20 @@ const tex = new TeX({ packages: AllPackages });
 const svg = new SVG({ fontCache: "none" });
 const mathDocument = mathjax.document("", { InputJax: tex, OutputJax: svg });
 
-const MAX_SIZE = 1024;
-const GAP = 1; // minimal vertical gap in px
+const TILE_SIZE = 1024;
+const GAP = 1;
+
+function isLikelyPlainText(str) {
+  return !/[\\^_{}]|\\frac|\\sum|\\sqrt|\\int|\\pm|\\sin|\\cos|\\tan|\\log|\\ln|\\exp|\\leq|\\geq|\\neq|\\to|\\infty/.test(str);
+}
+function preprocessFormula(str) {
+  if (!str || typeof str !== "string" || !str.trim()) return "\\text{ }";
+  if (isLikelyPlainText(str)) {
+    const safe = str.replace(/([\\{}])/g, "\\$1");
+    return `\\text{${safe}}`;
+  }
+  return str;
+}
 
 async function getTightSVG(svgString, scale) {
   const density = 72 * scale;
@@ -71,11 +83,12 @@ app.post("/render", async (req, res) => {
       return res.status(400).json({ error: "Missing or invalid LaTeX input" });
     }
 
+    const processedFormulas = formulaList.map(preprocessFormula);
+
     // Render and crop each formula (including plain text) as math
     const rows = [];
     let totalHeight = 0, maxWidth = 0;
-    for (const latex of formulaList) {
-      // Always render as math, even for plain text
+    for (const latex of processedFormulas) {
       const node = mathDocument.convert(latex, { display: true });
       const inner = adaptor.innerHTML(node);
       const viewBox = adaptor.getAttribute(node, "viewBox") || "0 0 128 64";
@@ -92,72 +105,48 @@ app.post("/render", async (req, res) => {
       totalHeight += height + GAP;
       if (width > maxWidth) maxWidth = width;
     }
-    totalHeight -= GAP; // remove last gap
-
-    // If maxWidth > MAX_SIZE, scale all PNGs down proportionally
-    let finalWidth = maxWidth;
-    let finalHeight = totalHeight;
-    let scaleDown = 1;
-    if (maxWidth > MAX_SIZE) {
-      scaleDown = MAX_SIZE / maxWidth;
-      finalWidth = MAX_SIZE;
-      finalHeight = Math.max(1, Math.floor(totalHeight * scaleDown));
-    }
-
-    // Resize all PNGs if needed
-    const resizedRows = [];
-    for (const row of rows) {
-      let png = row.png;
-      let width = row.width;
-      let height = row.height;
-      if (scaleDown !== 1) {
-        const resized = await sharp(png)
-          .resize({
-            width: Math.max(1, Math.floor(width * scaleDown)),
-            height: Math.max(1, Math.floor(height * scaleDown)),
-            fit: "fill"
-          })
-          .png()
-          .toBuffer();
-        const meta = await sharp(resized).metadata();
-        png = resized;
-        width = meta.width;
-        height = meta.height;
-      }
-      resizedRows.push({ png, width, height });
-    }
+    totalHeight -= GAP;
 
     // Compose final image by stacking PNGs vertically, centered
     let composite = sharp({
       create: {
-        width: finalWidth,
-        height: finalHeight,
+        width: maxWidth,
+        height: totalHeight,
         channels: 4,
         background: { r: 0, g: 0, b: 0, alpha: 0 }
       }
     });
     let y = 0;
     const composites = [];
-    for (const row of resizedRows) {
-      const left = Math.floor((finalWidth - row.width) / 2);
+    for (const row of rows) {
+      const left = Math.floor((maxWidth - row.width) / 2);
       composites.push({
         input: row.png,
         top: y,
         left: left >= 0 ? left : 0
       });
-      y += row.height + Math.max(1, Math.floor(GAP * scaleDown));
+      y += row.height + GAP;
     }
     composite = composite.composite(composites);
 
-    // Output raw RGBA buffer
+    // Output as tiles (horizontal slices, TILE_SIZE rows per tile)
     const { data, info } = await composite.raw().toBuffer({ resolveWithObject: true });
-    const base64 = Buffer.from(data).toString("base64");
+    const tiles = [];
+    const channels = info.channels;
+    const width = info.width;
+    const height = info.height;
+    for (let y = 0; y < height; y += TILE_SIZE) {
+      const rows = Math.min(TILE_SIZE, height - y);
+      const slice = data.subarray(y * width * channels, (y + rows) * width * channels);
+      tiles.push(Buffer.from(slice).toString("base64"));
+    }
 
     res.json({
-      width: info.width,
-      height: info.height,
-      channels: info.channels,
-      rgbaBase64: base64
+      width,
+      height,
+      channels,
+      tileHeight: TILE_SIZE,
+      tiles
     });
 
   } catch (err) {
