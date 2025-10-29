@@ -93,9 +93,38 @@ app.post("/render", async (req, res) => {
     }
     totalHeight -= GAP; // remove last gap
 
-    // Clamp to MAX_SIZE
-    const finalWidth = Math.min(maxWidth, MAX_SIZE);
-    const finalHeight = Math.min(totalHeight, MAX_SIZE);
+    // If maxWidth > MAX_SIZE, scale all PNGs down proportionally
+    let finalWidth = maxWidth;
+    let finalHeight = totalHeight;
+    let scaleDown = 1;
+    if (maxWidth > MAX_SIZE) {
+      scaleDown = MAX_SIZE / maxWidth;
+      finalWidth = MAX_SIZE;
+      finalHeight = Math.max(1, Math.floor(totalHeight * scaleDown));
+    }
+
+    // Resize all PNGs if needed
+    const resizedRows = [];
+    for (const row of rows) {
+      let png = row.png;
+      let width = row.width;
+      let height = row.height;
+      if (scaleDown !== 1) {
+        const resized = await sharp(png)
+          .resize({
+            width: Math.max(1, Math.floor(width * scaleDown)),
+            height: Math.max(1, Math.floor(height * scaleDown)),
+            fit: "fill"
+          })
+          .png()
+          .toBuffer();
+        const meta = await sharp(resized).metadata();
+        png = resized;
+        width = meta.width;
+        height = meta.height;
+      }
+      resizedRows.push({ png, width, height });
+    }
 
     // Compose final image by stacking PNGs vertically, centered
     let composite = sharp({
@@ -108,15 +137,14 @@ app.post("/render", async (req, res) => {
     });
     let y = 0;
     const composites = [];
-    for (const row of rows) {
-      // Center each formula horizontally
+    for (const row of resizedRows) {
       const left = Math.floor((finalWidth - row.width) / 2);
       composites.push({
         input: row.png,
         top: y,
         left: left >= 0 ? left : 0
       });
-      y += row.height + GAP;
+      y += row.height + Math.max(1, Math.floor(GAP * scaleDown));
     }
     composite = composite.composite(composites);
 
