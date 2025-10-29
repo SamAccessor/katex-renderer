@@ -22,7 +22,6 @@ const mathDocument = mathjax.document("", { InputJax: tex, OutputJax: svg });
 const MAX_SIZE = 1024;
 const GAP = 1; // minimal vertical gap in px
 
-// Helper: get tight pixel bbox for a single SVG
 async function getTightSVG(svgString, scale) {
   const density = 72 * scale;
   const pngBuffer = await sharp(Buffer.from(svgString), { density })
@@ -30,7 +29,6 @@ async function getTightSVG(svgString, scale) {
     .toBuffer();
   const { data, info } = await sharp(pngBuffer).raw().toBuffer({ resolveWithObject: true });
 
-  // Find tight bounding box
   let minX = info.width, minY = info.height, maxX = -1, maxY = -1;
   for (let y = 0; y < info.height; y++) {
     for (let x = 0; x < info.width; x++) {
@@ -49,7 +47,6 @@ async function getTightSVG(svgString, scale) {
   const width = maxX - minX + 1;
   const height = maxY - minY + 1;
 
-  // Crop to tight bbox
   const cropped = await sharp(pngBuffer)
     .extract({ left: minX, top: minY, width, height })
     .png()
@@ -74,7 +71,7 @@ app.post("/render", async (req, res) => {
       return res.status(400).json({ error: "Missing or invalid LaTeX input" });
     }
 
-    // Render and crop each formula
+    // Render and crop each formula, record width/height
     const rows = [];
     let totalHeight = 0, maxWidth = 0;
     for (const latex of formulaList) {
@@ -92,7 +89,7 @@ app.post("/render", async (req, res) => {
       const { png, width, height } = await getTightSVG(svgWrapped, scale);
       rows.push({ png, width, height });
       totalHeight += height + GAP;
-      maxWidth = Math.max(maxWidth, width);
+      if (width > maxWidth) maxWidth = width;
     }
     totalHeight -= GAP; // remove last gap
 
@@ -112,10 +109,12 @@ app.post("/render", async (req, res) => {
     let y = 0;
     const composites = [];
     for (const row of rows) {
+      // Center each formula horizontally
+      const left = Math.floor((finalWidth - row.width) / 2);
       composites.push({
         input: row.png,
         top: y,
-        left: Math.floor((finalWidth - row.width) / 2)
+        left: left >= 0 ? left : 0
       });
       y += row.height + GAP;
     }
