@@ -13,22 +13,60 @@ const app = express();
 app.use(cors());
 app.use(bodyParser.json({ limit: "2mb" }));
 
-// MathJax setup
 const adaptor = liteAdaptor();
 RegisterHTMLHandler(adaptor);
 const tex = new TeX({ packages: AllPackages });
 const svg = new SVG({ fontCache: "none" });
 const mathDocument = mathjax.document("", { InputJax: tex, OutputJax: svg });
 
+const MAX_SIZE = 1024;
+const GAP = 2; // minimal vertical gap in px
+
+// Helper: get tight pixel bbox for a single SVG
+async function getTightSVG(svgString, scale) {
+  // Rasterize to PNG, get alpha channel, crop to non-transparent
+  const density = 72 * scale;
+  const pngBuffer = await sharp(Buffer.from(svgString), { density })
+    .png()
+    .toBuffer();
+  const { data, info } = await sharp(pngBuffer).raw().toBuffer({ resolveWithObject: true });
+
+  // Find tight bounding box
+  let minX = info.width, minY = info.height, maxX = -1, maxY = -1;
+  for (let y = 0; y < info.height; y++) {
+    for (let x = 0; x < info.width; x++) {
+      const alpha = data[(y * info.width + x) * 4 + 3];
+      if (alpha > 1) {
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+  if (maxX < minX || maxY < minY) {
+    // fallback: use full image
+    minX = 0; minY = 0; maxX = info.width - 1; maxY = info.height - 1;
+  }
+  const width = maxX - minX + 1;
+  const height = maxY - minY + 1;
+
+  // Crop to tight bbox
+  const cropped = await sharp(pngBuffer)
+    .extract({ left: minX, top: minY, width, height })
+    .png()
+    .toBuffer();
+
+  return { png: cropped, width, height };
+}
+
 app.post("/render", async (req, res) => {
   try {
     const {
       formulas,
-      scale = 3, // Lower default scale for less memory
-      margin = 2
+      scale = 3
     } = req.body;
 
-    // Accept either a single formula or an array
     let formulaList = [];
     if (Array.isArray(formulas)) {
       formulaList = formulas;
@@ -38,8 +76,8 @@ app.post("/render", async (req, res) => {
       return res.status(400).json({ error: "Missing or invalid LaTeX input" });
     }
 
-    // Render each formula as display math and stack vertically
-    const svgRows = [];
+    // Render and crop each formula
+    const rows = [];
     let totalHeight = 0, maxWidth = 0;
     for (const latex of formulaList) {
       const node = mathDocument.convert(latex, { display: true });
@@ -53,37 +91,36 @@ app.post("/render", async (req, res) => {
           ${inner}
         </svg>
       `;
-      // Only get metadata, do not rasterize yet
-      const meta = await sharp(Buffer.from(svgWrapped), { density: 72 * scale }).metadata();
-      svgRows.push({ svg: svgWrapped, width: meta.width, height: meta.height });
-      totalHeight += meta.height + margin * scale;
-      maxWidth = Math.max(maxWidth, meta.width);
+      const { png, width, height } = await getTightSVG(svgWrapped, scale);
+      rows.push({ png, width, height });
+      totalHeight += height + GAP;
+      maxWidth = Math.max(maxWidth, width);
     }
+    totalHeight -= GAP; // remove last gap
 
-    // Compose a single SVG stacking all formulas vertically
+    // Compose final image by stacking PNGs vertically
+    let composite = sharp({
+      create: {
+        width: Math.min(maxWidth, MAX_SIZE),
+        height: Math.min(totalHeight, MAX_SIZE),
+        channels: 4,
+        background: { r: 0, g: 0, b: 0, alpha: 0 }
+      }
+    });
     let y = 0;
-    const stackedSVG = `
-      <svg xmlns="http://www.w3.org/2000/svg" width="${maxWidth}" height="${totalHeight}">
-        <style>
-          * { fill: white !important; stroke: white !important; }
-        </style>
-        ${svgRows.map(row => {
-          const g = `<g transform="translate(0,${y})">${row.svg.replace(/^<svg[^>]*>|<\/svg>$/g, "")}</g>`;
-          y += row.height + margin * scale;
-          return g;
-        }).join("\n")}
-      </svg>
-    `;
+    const composites = [];
+    for (const row of rows) {
+      composites.push({
+        input: row.png,
+        top: y,
+        left: Math.floor((maxWidth - row.width) / 2)
+      });
+      y += row.height + GAP;
+    }
+    composite = composite.composite(composites);
 
-    // Rasterize to raw RGBA (transparent background)
-    const density = 72 * scale;
-    const rawResult = await sharp(Buffer.from(stackedSVG), { density })
-      .resize({ width: Math.min(maxWidth, 1024), height: Math.min(totalHeight, 1024), fit: "contain", background: { r: 0, g: 0, b: 0, alpha: 0 } })
-      .raw()
-      .toBuffer({ resolveWithObject: true });
-
-    const { data, info } = rawResult;
-    // No extra cropping or tiling, just send the buffer
+    // Output raw RGBA buffer
+    const { data, info } = await composite.raw().toBuffer({ resolveWithObject: true });
     const base64 = Buffer.from(data).toString("base64");
 
     res.json({
